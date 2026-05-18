@@ -11,10 +11,12 @@ from openpilot.system.hardware import TICI, HARDWARE
 collect_ignore = [
   "selfdrive/test/process_replay/test_processes.py",
   "selfdrive/test/process_replay/test_regen.py",
+  # tinygrad JIT has process-global state. Other test files import modeld → tinygrad,
+  # which corrupts JIT captures for test_warp.py in the same process. Run separately in CI.
+  "sunnypilot/modeld_v2/tests/test_warp.py",
 ]
 collect_ignore_glob = [
   "selfdrive/debug/*.py",
-  "sunnypilot/modeld_v2/*.py",
 ]
 
 

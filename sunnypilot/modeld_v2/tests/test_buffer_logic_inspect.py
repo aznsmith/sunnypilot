@@ -9,15 +9,16 @@ import openpilot.sunnypilot.modeld_v2.modeld as modeld_module
 ModelState = modeld_module.ModelState
 
 # These are the shapes extracted/loaded from the model onnx
+# Third element is the bundle's is_20hz flag (from JSON, independent of desire shape)
 SHAPE_MODE_PARAMS = [
-  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), "nav_features": (1, 256), "nav_instructions": (1, 150)}, 'non20hz'), # Optimus Prime
-  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), "lat_planner_state": (1, 4),}, 'non20hz'), # farmville
-  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), "lateral_control_params": (1, 2), "prev_desired_curv": (1, 100, 1)}, 'non20hz'), # wd40
-  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), 'prev_desired_curv': (1, 100, 1), "lateral_control_params": (1, 2),}, 'non20hz'), # NTS
-  ({'desire': (1, 25, 8), 'features_buffer': (1, 24, 512)}, '20hz'), # NPR
-  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), 'prev_desired_curv': (1, 100, 1), "lateral_control_params": (1, 2),}, 'non20hz'), # NTS
-  ({'desire': (1, 25, 8), 'features_buffer': (1, 25, 512)}, 'split'), # Steam Powered v2
-  ({'desire_pulse': (1, 25, 8), 'features_buffer': (1, 25, 512)}, 'split'), # desire rename
+  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), "nav_features": (1, 256), "nav_instructions": (1, 150)}, 'non20hz', False), # Optimus Prime
+  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), "lat_planner_state": (1, 4),}, 'non20hz', False), # farmville
+  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), "lateral_control_params": (1, 2), "prev_desired_curv": (1, 100, 1)}, 'non20hz', False), # wd40
+  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), 'prev_desired_curv': (1, 100, 1), "lateral_control_params": (1, 2),}, 'non20hz', False), # NTS
+  ({'desire': (1, 25, 8), 'features_buffer': (1, 24, 512)}, '20hz', True), # NPR
+  ({'desire': (1, 100, 8), 'features_buffer': (1, 99, 512), 'prev_desired_curv': (1, 100, 1), "lateral_control_params": (1, 2),}, 'non20hz', False), # NTS
+  ({'desire': (1, 25, 8), 'features_buffer': (1, 25, 512)}, 'split', True), # Steam Powered v2
+  ({'desire_pulse': (1, 25, 8), 'features_buffer': (1, 25, 512)}, 'split', True), # desire rename
 ]
 
 
@@ -35,7 +36,7 @@ class DummyBundle:
 
 
 class DummyModelRunner:
-  def __init__(self, input_shapes: dict[str, tuple[int, int, int]], constants: Any = None) -> None:
+  def __init__(self, input_shapes: dict[str, tuple[int, int, int]], constants: Any = None, is_20hz: bool | None = None) -> None:
     self.input_shapes = input_shapes
     self.constants = constants or type('C', (), {
       'FULL_HISTORY_BUFFER_LEN': 100,
@@ -46,11 +47,11 @@ class DummyModelRunner:
       'TEMPORAL_SKIP': 4,
     })()
     self.vision_input_names: list[str] = []
-    shape = input_shapes.get('desire', (1, 0, 0)) # [batch, history, features]
-    if shape[1] == 25:
-      self.is_20hz = True
+    if is_20hz is not None:
+      self.is_20hz = is_20hz
     else:
-      self.is_20hz = False
+      shape = input_shapes.get('desire', (1, 0, 0))
+      self.is_20hz = shape[1] == 25
 
   # Minimal prepare/run methods so ModelState can be run without actually running the model
   def prepare_inputs(self, numpy_inputs):
@@ -69,13 +70,18 @@ def shapes(request):
 
 
 @pytest.fixture
+def is_20hz(request):
+  return request.param
+
+
+@pytest.fixture
 def bundle() -> DummyBundle:
   return DummyBundle()
 
 
 @pytest.fixture
-def runner(shapes) -> DummyModelRunner:
-  return DummyModelRunner(shapes)
+def runner(shapes, is_20hz) -> DummyModelRunner:
+  return DummyModelRunner(shapes, is_20hz=is_20hz)
 
 
 @pytest.fixture
@@ -103,7 +109,15 @@ def get_expected_indices(shape, constants, mode, key=None):
   return None
 
 
-@pytest.mark.parametrize("shapes,mode", SHAPE_MODE_PARAMS, indirect=["shapes"])
+@pytest.mark.parametrize("shapes,mode,is_20hz", SHAPE_MODE_PARAMS, indirect=["shapes", "is_20hz"])
+def test_warp_buffer_length(shapes, mode, apply_patches):
+  state = ModelState()
+  expected = 2 if mode == 'non20hz' else 5
+  assert state.warp.buffer_length == expected, \
+    f"{mode}: warp buffer_length={state.warp.buffer_length}, expected {expected} (frame_gap={expected - 1})"
+
+
+@pytest.mark.parametrize("shapes,mode,is_20hz", SHAPE_MODE_PARAMS, indirect=["shapes", "is_20hz"])
 def test_buffer_shapes_and_indices(shapes, mode, apply_patches):
   state = ModelState()
   constants = DummyModelRunner(shapes).constants
@@ -233,7 +247,7 @@ def dynamic_buffer_update(state, key, new_val, mode):
   return None
 
 
-@pytest.mark.parametrize("shapes,mode", SHAPE_MODE_PARAMS, indirect=["shapes"])
+@pytest.mark.parametrize("shapes,mode,is_20hz", SHAPE_MODE_PARAMS, indirect=["shapes", "is_20hz"])
 @pytest.mark.parametrize("key", ["desire", "features_buffer", "prev_desired_curv"])
 def test_buffer_update_equivalence(shapes, mode, key, apply_patches):
   state = ModelState()
