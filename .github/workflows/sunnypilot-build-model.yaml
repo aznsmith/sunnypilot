@@ -212,14 +212,6 @@ jobs:
               --output "${{ env.MODELS_DIR }}/$OUTPUT_NAME"
           fi
 
-          # Legacy: also compile separate pkls for backward compat
-          find "${{ env.MODELS_DIR }}" -maxdepth 1 -name '*.onnx' | while IFS= read -r onnx_file; do
-            base_name=$(basename "$onnx_file" .onnx)
-            output_file="${{ env.MODELS_DIR }}/${base_name}_tinygrad.pkl"
-            echo "Compiling separate: $onnx_file -> $output_file"
-            DEV=QCOM python3 "${{ env.TINYGRAD_PATH }}/examples/openpilot/compile3.py" "$onnx_file" "$output_file"
-          done
-
       - name: Validate Model Outputs
         run: |
           source /etc/profile

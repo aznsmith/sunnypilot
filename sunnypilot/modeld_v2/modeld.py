@@ -27,14 +27,12 @@ from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, 
 
 from openpilot.sunnypilot.modeld_v2.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState, get_curvature_from_output
 from openpilot.sunnypilot.modeld_v2.constants import Plan
-from openpilot.sunnypilot.modeld_v2.warp import Warp
 from openpilot.sunnypilot.modeld_v2.meta_helper import load_meta_constants
 from openpilot.sunnypilot.modeld_v2.camera_offset_helper import CameraOffsetHelper
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.models.helpers import get_active_bundle
-from openpilot.sunnypilot.models.runners.helpers import get_model_runner
 
 PROCESS_NAME = "selfdrive.modeld.modeld_tinygrad"
 
@@ -76,12 +74,10 @@ class FrameMeta:
 
 
 class ModelState(ModelStateBase):
-  frames: dict[str, Warp]
   inputs: dict[str, np.ndarray]
-  prev_desire: np.ndarray  # for tracking the rising edge of the pulse
-  temporal_idxs: slice | np.ndarray
+  prev_desire: np.ndarray
 
-  def __init__(self, cam_w: int = 0, cam_h: int = 0):
+  def __init__(self, cam_w: int, cam_h: int):
     ModelStateBase.__init__(self)
 
     model_bundle = get_active_bundle()
@@ -94,12 +90,8 @@ class ModelState(ModelStateBase):
     self.PLANPLUS_CONTROL: float = 1.0
 
     combined_pkl_path = _find_combined_pkl(model_bundle)
-    self.use_combined = combined_pkl_path is not None and cam_w > 0
-
-    if self.use_combined:
-      self._init_combined(combined_pkl_path, cam_w, cam_h, model_bundle)
-    else:
-      self._init_separate(model_bundle)
+    assert combined_pkl_path is not None, "No combined pkl found — all models must be compiled with compile_modeld.py"
+    self._init_combined(combined_pkl_path, cam_w, cam_h, model_bundle)
 
   def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
     from tinygrad.tensor import Tensor
@@ -168,48 +160,6 @@ class ModelState(ModelStateBase):
       frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.DEV).contiguous().realize(),
       big_frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.DEV).contiguous().realize())
 
-    self.model_runner = None
-    self.warp = None
-    self.numpy_inputs = {}
-    self.temporal_buffers = {}
-    self.temporal_idxs_map = {}
-
-  def _init_separate(self, model_bundle):
-    try:
-      self.model_runner = get_model_runner()
-      self.constants = self.model_runner.constants
-    except Exception as e:
-      cloudlog.exception(f"Failed to initialize model runner: {str(e)}")
-      raise
-
-    buffer_length = 5 if self.model_runner.is_20hz else 2
-    self.warp = Warp(buffer_length)
-    self.prev_desire = np.zeros(self.constants.DESIRE_LEN, dtype=np.float32)
-    self.numpy_inputs = {}
-    self.temporal_buffers = {}
-    self.temporal_idxs_map = {}
-
-    for key, shape in self.model_runner.input_shapes.items():
-      if key not in self.model_runner.vision_input_names: # Policy inputs
-        self.numpy_inputs[key] = np.zeros(shape, dtype=np.float32)
-
-        # Temporal input: shape is [batch, history, features]
-        if len(shape) == 3 and shape[1] > 1:
-          buffer_history_len = shape[1] * 4 if shape[1] < 99 else shape[1]  # Allow for higher history buffers in the future
-          feature_len = shape[2]
-          features_buffer_shape = self.model_runner.input_shapes.get('features_buffer')
-          if shape[1] in (24, 25) and features_buffer_shape is not None and features_buffer_shape[1] == 24:  # 20Hz
-            buffer_history_len = (features_buffer_shape[1] + 1) * 4
-            step = int(-buffer_history_len / shape[1])
-            self.temporal_idxs_map[key] = np.arange(step, step * (shape[1] + 1), step)[::-1]
-          elif shape[1] == 25:  # Split
-            skip = buffer_history_len // shape[1]
-            self.temporal_idxs_map[key] = np.arange(buffer_history_len)[-1 - (skip * (shape[1] - 1))::skip]
-          elif shape[1] >= 99:  # non20hz
-            self.temporal_idxs_map[key] = np.arange(shape[1])
-          self.temporal_buffers[key] = np.zeros((1, buffer_history_len, feature_len), dtype=np.float32)
-
-    self.use_combined = False
 
   @property
   def mlsim(self) -> bool:
@@ -217,23 +167,14 @@ class ModelState(ModelStateBase):
 
   @property
   def vision_input_names(self) -> list[str]:
-    if self.use_combined:
-      return self._vision_input_names
-    return self.model_runner.vision_input_names
+    return self._vision_input_names
 
   @property
   def desire_key(self) -> str:
-    if self.use_combined:
-      return next(k for k in self.npy if k.startswith('desire'))
-    return next(key for key in self.numpy_inputs if key.startswith('desire'))
+    return next(k for k in self.npy if k.startswith('desire'))
 
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
                 inputs: dict[str, np.ndarray], prepare_only: bool) -> dict[str, np.ndarray] | None:
-    if self.use_combined:
-      return self._run_combined(bufs, transforms, inputs, prepare_only)
-    return self._run_separate(bufs, transforms, inputs, prepare_only)
-
-  def _run_combined(self, bufs, transforms, inputs, prepare_only):
     from tinygrad.tensor import Tensor
 
     for key in bufs.keys():
@@ -248,8 +189,9 @@ class ModelState(ModelStateBase):
     inputs[desire_key][0] = 0
     self.npy[desire_key][:] = np.where(inputs[desire_key] - self.prev_desire > .99, inputs[desire_key], 0)
     self.prev_desire[:] = inputs[desire_key]
-    if 'traffic_convention' in self.npy and 'traffic_convention' in inputs:
-      self.npy['traffic_convention'][:] = inputs['traffic_convention']
+    for key in ('traffic_convention', 'lateral_control_params'):
+      if key in self.npy and key in inputs:
+        self.npy[key][:] = inputs[key]
 
     road_key = next(n for n in bufs if 'big' not in n)
     wide_key = next(n for n in bufs if 'big' in n)
@@ -274,57 +216,6 @@ class ModelState(ModelStateBase):
       outputs = {**self.parser.parse_vision_outputs(vision_sliced), **self.parser.parse_policy_outputs(policy_sliced)}
 
     return outputs
-
-  def _run_separate(self, bufs, transforms, inputs, prepare_only):
-    inputs[self.desire_key][0] = 0
-    new_desire = np.where(inputs[self.desire_key] - self.prev_desire > .99, inputs[self.desire_key], 0)
-    self.prev_desire[:] = inputs[self.desire_key]
-    self.temporal_buffers[self.desire_key][0,:-1] = self.temporal_buffers[self.desire_key][0,1:]
-    self.temporal_buffers[self.desire_key][0,-1] = new_desire
-
-    # Roll buffer and assign based on desire.shape[1] value
-    if self.temporal_buffers[self.desire_key].shape[1] > self.numpy_inputs[self.desire_key].shape[1]:
-      skip = self.temporal_buffers[self.desire_key].shape[1] // self.numpy_inputs[self.desire_key].shape[1]
-      self.numpy_inputs[self.desire_key][:] = (self.temporal_buffers[self.desire_key][0].reshape(
-                                               self.numpy_inputs[self.desire_key].shape[0], self.numpy_inputs[self.desire_key].shape[1], skip, -1).max(axis=2))
-    else:
-      self.numpy_inputs[self.desire_key][:] = self.temporal_buffers[self.desire_key][0, self.temporal_idxs_map[self.desire_key]]
-
-    for key in self.numpy_inputs:
-      if key in inputs and key not in [self.desire_key]:
-        self.numpy_inputs[key][:] = inputs[key]
-
-    imgs_tensors = self.warp.process(bufs, transforms)
-    for name, tensor in imgs_tensors.items():
-      self.model_runner.inputs[name] = tensor
-    self.model_runner.prepare_inputs(self.numpy_inputs)
-
-    if prepare_only:
-      return None
-
-    # Run model inference
-    outputs = self.model_runner.run_model()
-
-    # Update features_buffer
-    self.temporal_buffers['features_buffer'][0, :-1] = self.temporal_buffers['features_buffer'][0, 1:]
-    self.temporal_buffers['features_buffer'][0, -1] = outputs['hidden_state'][0, :]
-    self.numpy_inputs['features_buffer'][:] = self.temporal_buffers['features_buffer'][0, self.temporal_idxs_map['features_buffer']]
-
-    if "desired_curvature" in outputs:
-      input_name_prev = None
-      if "prev_desired_curv" in self.numpy_inputs.keys():
-        input_name_prev = 'prev_desired_curv'
-      if input_name_prev and input_name_prev in self.temporal_buffers:
-        self.process_desired_curvature(outputs, input_name_prev)
-
-    return outputs
-
-  def process_desired_curvature(self, outputs, input_name_prev):
-    self.temporal_buffers[input_name_prev][0,:-1] = self.temporal_buffers[input_name_prev][0,1:]
-    self.temporal_buffers[input_name_prev][0,-1,:] = outputs['desired_curvature'][0, :]
-    self.numpy_inputs[input_name_prev][:] = self.temporal_buffers[input_name_prev][0, self.temporal_idxs_map[input_name_prev]]
-    if self.mlsim:
-      self.numpy_inputs[input_name_prev][:] = 0*self.temporal_buffers[input_name_prev][0, self.temporal_idxs_map[input_name_prev]]
 
   def get_action_from_model(self, model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
                             lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
@@ -377,7 +268,7 @@ def main(demo=False):
 
   cloudlog.warning("loading model")
   model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height)
-  cloudlog.warning(f"models loaded (combined={model.use_combined}), modeld starting")
+  cloudlog.warning("models loaded, modeld starting")
 
   # messaging
   pm = PubMaster(["modelV2", "drivingModelData", "cameraOdometry", "modelDataV2SP"])
@@ -491,8 +382,7 @@ def main(demo=False):
       'traffic_convention': traffic_convention,
     }
 
-    if "lateral_control_params" in model.numpy_inputs.keys():
-      inputs['lateral_control_params'] = np.array([v_ego, lat_delay], dtype=np.float32)
+    inputs['lateral_control_params'] = np.array([v_ego, lat_delay], dtype=np.float32)
 
     mt1 = time.perf_counter()
     model_output = model.run(bufs, transforms, inputs, prepare_only)
