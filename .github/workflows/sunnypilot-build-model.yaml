@@ -164,16 +164,73 @@ jobs:
           source /etc/profile
           export UV_PROJECT_ENVIRONMENT=${HOME}/venv
           export VIRTUAL_ENV=$UV_PROJECT_ENVIRONMENT
-          export PYTHONPATH="${PYTHONPATH}:${{ env.TINYGRAD_PATH }}"
+          export PYTHONPATH="${PYTHONPATH}:${{ env.TINYGRAD_PATH }}:${{ github.workspace }}"
 
-          # Loop through all .onnx files
+          COMPILE_MODELD="${{ github.workspace }}/sunnypilot/modeld_v2/compile_modeld.py"
+          CAMERA_RES="1928x1208 1344x760"
+          MODEL_SIZE="256x128"
+          TG_FLAGS="DEV=QCOM FLOAT16=1 NOLOCALS=1 JIT_BATCH_SIZE=0"
+
+          # Generate metadata for all ONNX files
+          find "${{ env.MODELS_DIR }}" -maxdepth 1 -name '*.onnx' | while IFS= read -r onnx_file; do
+            echo "Generating metadata: $onnx_file"
+            ${TG_FLAGS} python3 "${{ env.MODELS_DIR }}/../get_model_metadata.py" "$onnx_file" || true
+          done
+
+          # Detect model type and compile combined JIT
+          VISION_ONNX="${{ env.MODELS_DIR }}/driving_vision.onnx"
+          POLICY_ONNX="${{ env.MODELS_DIR }}/driving_policy.onnx"
+          OFF_POLICY_ONNX="${{ env.MODELS_DIR }}/driving_off_policy.onnx"
+          ON_POLICY_ONNX="${{ env.MODELS_DIR }}/driving_on_policy.onnx"
+          SUPERCOMBO_ONNX="${{ env.MODELS_DIR }}/supercombo.onnx"
+
+          if [ -f "$VISION_ONNX" ]; then
+            if [ -f "$ON_POLICY_ONNX" ] && [ -f "$OFF_POLICY_ONNX" ]; then
+              echo "Detected: vision + on-policy + off-policy"
+              ${TG_FLAGS} python3 "$COMPILE_MODELD" \
+                --model-type vision_multi_policy \
+                --model-size $MODEL_SIZE \
+                --camera-resolutions $CAMERA_RES \
+                --vision-onnx "$VISION_ONNX" \
+                --off-policy-onnx "$OFF_POLICY_ONNX" \
+                --on-policy-onnx "$ON_POLICY_ONNX" \
+                --output "${{ env.MODELS_DIR }}/driving_combined_tinygrad.pkl"
+            elif [ -f "$OFF_POLICY_ONNX" ] && [ -f "$POLICY_ONNX" ]; then
+              echo "Detected: vision + policy + off-policy"
+              ${TG_FLAGS} python3 "$COMPILE_MODELD" \
+                --model-type vision_multi_policy \
+                --model-size $MODEL_SIZE \
+                --camera-resolutions $CAMERA_RES \
+                --vision-onnx "$VISION_ONNX" \
+                --policy-onnx "$POLICY_ONNX" \
+                --off-policy-onnx "$OFF_POLICY_ONNX" \
+                --output "${{ env.MODELS_DIR }}/driving_combined_tinygrad.pkl"
+            elif [ -f "$POLICY_ONNX" ]; then
+              echo "Detected: vision + policy"
+              ${TG_FLAGS} python3 "$COMPILE_MODELD" \
+                --model-type vision_policy \
+                --model-size $MODEL_SIZE \
+                --camera-resolutions $CAMERA_RES \
+                --vision-onnx "$VISION_ONNX" \
+                --policy-onnx "$POLICY_ONNX" \
+                --output "${{ env.MODELS_DIR }}/driving_combined_tinygrad.pkl"
+            fi
+          elif [ -f "$SUPERCOMBO_ONNX" ]; then
+            echo "Detected: supercombo"
+            ${TG_FLAGS} python3 "$COMPILE_MODELD" \
+              --model-type supercombo \
+              --model-size $MODEL_SIZE \
+              --camera-resolutions $CAMERA_RES \
+              --supercombo-onnx "$SUPERCOMBO_ONNX" \
+              --output "${{ env.MODELS_DIR }}/driving_combined_tinygrad.pkl"
+          fi
+
+          # Legacy: also compile separate pkls for backward compat
           find "${{ env.MODELS_DIR }}" -maxdepth 1 -name '*.onnx' | while IFS= read -r onnx_file; do
             base_name=$(basename "$onnx_file" .onnx)
             output_file="${{ env.MODELS_DIR }}/${base_name}_tinygrad.pkl"
-
-            echo "Compiling: $onnx_file -> $output_file"
+            echo "Compiling separate: $onnx_file -> $output_file"
             DEV=QCOM python3 "${{ env.TINYGRAD_PATH }}/examples/openpilot/compile3.py" "$onnx_file" "$output_file"
-            DEV=QCOM FLOAT16=1 NOLOCALS=1 JIT_BATCH_SIZE=0 python3 "${{ env.MODELS_DIR }}/../get_model_metadata.py" "$onnx_file" || true
           done
 
       - name: Validate Model Outputs

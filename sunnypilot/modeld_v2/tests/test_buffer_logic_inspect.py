@@ -33,6 +33,7 @@ class DummyBundle:
   def __init__(self) -> None:
     self.overrides = [DummyOverride('lat', '.1'), DummyOverride('long', '.3')]
     self.generation = 10  # default to non-mlsim for buffer-update tests, as raising to 11 here will zero curvature buffer
+    self.models = []
 
 
 class DummyModelRunner:

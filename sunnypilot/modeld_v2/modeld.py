@@ -6,6 +6,7 @@ USBGPU = "USBGPU" in os.environ
 if USBGPU:
   os.environ['DEV'] = 'AMD'
   os.environ['AMD_IFACE'] = 'USB'
+import pickle
 import time
 import numpy as np
 import cereal.messaging as messaging
@@ -38,6 +39,32 @@ from openpilot.sunnypilot.models.runners.helpers import get_model_runner
 PROCESS_NAME = "selfdrive.modeld.modeld_tinygrad"
 
 
+def _find_combined_pkl(bundle):
+  if bundle is None or not bundle.models:
+    return None
+  from openpilot.system.hardware.hw import Paths
+  model_root = Paths.model_root()
+
+  candidates = []
+  vision_models = [m for m in bundle.models if m.type.raw in ('vision',)]
+  if vision_models:
+    vision_file = vision_models[0].artifact.file_name
+    candidates.append(vision_file.replace('driving_vision_', 'driving_combined_'))
+  else:
+    supercombo_models = [m for m in bundle.models if m.type.raw in ('supercombo',)]
+    if supercombo_models:
+      sc_file = supercombo_models[0].artifact.file_name
+      candidates.append(sc_file.replace('supercombo_', 'driving_combined_'))
+
+  candidates.append('driving_combined_tinygrad.pkl')
+
+  for combined_file in candidates:
+    combined_path = os.path.join(model_root, combined_file)
+    if os.path.exists(combined_path):
+      return combined_path
+  return None
+
+
 class FrameMeta:
   frame_id: int = 0
   timestamp_sof: int = 0
@@ -54,14 +81,8 @@ class ModelState(ModelStateBase):
   prev_desire: np.ndarray  # for tracking the rising edge of the pulse
   temporal_idxs: slice | np.ndarray
 
-  def __init__(self):
+  def __init__(self, cam_w: int = 0, cam_h: int = 0):
     ModelStateBase.__init__(self)
-    try:
-      self.model_runner = get_model_runner()
-      self.constants = self.model_runner.constants
-    except Exception as e:
-      cloudlog.exception(f"Failed to initialize model runner: {str(e)}")
-      raise
 
     model_bundle = get_active_bundle()
     self.generation = model_bundle.generation if model_bundle is not None else None
@@ -72,6 +93,96 @@ class ModelState(ModelStateBase):
     self.MIN_LAT_CONTROL_SPEED = 0.3
     self.PLANPLUS_CONTROL: float = 1.0
 
+    combined_pkl_path = _find_combined_pkl(model_bundle)
+    self.use_combined = combined_pkl_path is not None and cam_w > 0
+
+    if self.use_combined:
+      self._init_combined(combined_pkl_path, cam_w, cam_h, model_bundle)
+    else:
+      self._init_separate(model_bundle)
+
+  def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
+    from tinygrad.tensor import Tensor
+    from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
+    from openpilot.selfdrive.modeld.compile_modeld import make_input_queues
+    from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip
+    from openpilot.selfdrive.modeld.helpers import get_tg_input_devices
+
+    cloudlog.warning(f"loading combined pkl: {pkl_path}")
+    with open(pkl_path, 'rb') as f:
+      jits = pickle.load(f)
+
+    self.DEV = get_tg_input_devices(PROCESS_NAME)
+
+    metadata = jits['metadata']
+    if 'vision' in metadata and 'policy' in metadata:
+      vision_metadata = metadata['vision']
+      policy_metadata = metadata['policy']
+      self.vision_output_slices = vision_metadata['output_slices']
+      self.policy_output_slices = policy_metadata['output_slices']
+      vision_input_shapes = vision_metadata['input_shapes']
+      policy_input_shapes = policy_metadata['input_shapes']
+      self._combined_model_type = 'split'
+      frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
+      self.input_queues, self.npy = make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device=self.DEV)
+    elif 'model' in metadata:
+      model_metadata = metadata['model']
+      self.vision_output_slices = model_metadata['output_slices']
+      self.policy_output_slices = {}
+      self._combined_model_type = 'supercombo'
+      from openpilot.sunnypilot.modeld_v2.compile_modeld import make_supercombo_input_queues
+      frame_skip = derive_frame_skip({}, model_metadata['input_shapes'])
+      self.input_queues, self.npy = make_supercombo_input_queues(model_metadata['input_shapes'], frame_skip, device=self.DEV)
+    else:
+      first_policy_key = next(k for k in metadata if k not in ('vision',))
+      vision_metadata = metadata['vision']
+      policy_metadata = metadata[first_policy_key]
+      self.vision_output_slices = vision_metadata['output_slices']
+      self.policy_output_slices = policy_metadata['output_slices']
+      vision_input_shapes = vision_metadata['input_shapes']
+      policy_input_shapes = policy_metadata['input_shapes']
+      self._combined_model_type = 'multi_policy'
+      frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
+      self.input_queues, self.npy = make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device=self.DEV)
+
+    from openpilot.sunnypilot.modeld_v2.parse_model_outputs_split import Parser as SplitParser
+    from openpilot.sunnypilot.modeld_v2.parse_model_outputs import Parser as CombinedParser
+    self.parser = SplitParser() if self._combined_model_type != 'supercombo' else CombinedParser()
+
+    is_20hz = bundle.is20hz if bundle else False
+    if is_20hz:
+      from openpilot.sunnypilot.models.split_model_constants import SplitModelConstants
+      self.constants = SplitModelConstants()
+    else:
+      from openpilot.sunnypilot.modeld_v2.constants import ModelConstants
+      self.constants = ModelConstants()
+
+    self.prev_desire = np.zeros(self.constants.DESIRE_LEN, dtype=np.float32)
+    self.full_frames: dict = {}
+    self._blob_cache: dict = {}
+    self.frame_buf_params = {k: get_nv12_info(cam_w, cam_h) for k in ('img', 'big_img')}
+
+    self._run_policy = jits[(cam_w, cam_h)]['run_policy']
+    self._warp_enqueue = jits[(cam_w, cam_h)]['warp_enqueue']
+    self._warp_enqueue(
+      **self.input_queues,
+      frame=Tensor(np.zeros(self.frame_buf_params['img'][3], dtype=np.uint8), device=self.DEV).contiguous().realize(),
+      big_frame=Tensor(np.zeros(self.frame_buf_params['big_img'][3], dtype=np.uint8), device=self.DEV).contiguous().realize())
+
+    self.model_runner = None
+    self.warp = None
+    self.numpy_inputs = {}
+    self.temporal_buffers = {}
+    self.temporal_idxs_map = {}
+
+  def _init_separate(self, model_bundle):
+    try:
+      self.model_runner = get_model_runner()
+      self.constants = self.model_runner.constants
+    except Exception as e:
+      cloudlog.exception(f"Failed to initialize model runner: {str(e)}")
+      raise
+
     buffer_length = 5 if self.model_runner.is_20hz else 2
     self.warp = Warp(buffer_length)
     self.prev_desire = np.zeros(self.constants.DESIRE_LEN, dtype=np.float32)
@@ -80,36 +191,91 @@ class ModelState(ModelStateBase):
     self.temporal_idxs_map = {}
 
     for key, shape in self.model_runner.input_shapes.items():
-      if key not in self.model_runner.vision_input_names: # Policy inputs
+      if key not in self.model_runner.vision_input_names:
         self.numpy_inputs[key] = np.zeros(shape, dtype=np.float32)
 
-        # Temporal input: shape is [batch, history, features]
         if len(shape) == 3 and shape[1] > 1:
-          buffer_history_len = shape[1] * 4 if shape[1] < 99 else shape[1]  # Allow for higher history buffers in the future
+          buffer_history_len = shape[1] * 4 if shape[1] < 99 else shape[1]
           feature_len = shape[2]
           features_buffer_shape = self.model_runner.input_shapes.get('features_buffer')
-          if shape[1] in (24, 25) and features_buffer_shape is not None and features_buffer_shape[1] == 24:  # 20Hz
+          if shape[1] in (24, 25) and features_buffer_shape is not None and features_buffer_shape[1] == 24:
             buffer_history_len = (features_buffer_shape[1] + 1) * 4
             step = int(-buffer_history_len / shape[1])
             self.temporal_idxs_map[key] = np.arange(step, step * (shape[1] + 1), step)[::-1]
-          elif shape[1] == 25:  # Split
+          elif shape[1] == 25:
             skip = buffer_history_len // shape[1]
             self.temporal_idxs_map[key] = np.arange(buffer_history_len)[-1 - (skip * (shape[1] - 1))::skip]
-          elif shape[1] >= 99:  # non20hz
+          elif shape[1] >= 99:
             self.temporal_idxs_map[key] = np.arange(shape[1])
           self.temporal_buffers[key] = np.zeros((1, buffer_history_len, feature_len), dtype=np.float32)
+
+    self.use_combined = False
 
   @property
   def mlsim(self) -> bool:
     return bool(self.generation is not None and self.generation >= 11)
 
   @property
+  def vision_input_names(self) -> list[str]:
+    if self.use_combined:
+      return ['img', 'big_img']
+    return self.model_runner.vision_input_names
+
+  @property
   def desire_key(self) -> str:
+    if self.use_combined:
+      return next(k for k in self.npy if k.startswith('desire'))
     return next(key for key in self.numpy_inputs if key.startswith('desire'))
 
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
                 inputs: dict[str, np.ndarray], prepare_only: bool) -> dict[str, np.ndarray] | None:
-    # Model decides when action is completed, so desire input is just a pulse triggered on rising edge
+    if self.use_combined:
+      return self._run_combined(bufs, transforms, inputs, prepare_only)
+    return self._run_separate(bufs, transforms, inputs, prepare_only)
+
+  def _run_combined(self, bufs, transforms, inputs, prepare_only):
+    from tinygrad.tensor import Tensor
+
+    for key in bufs.keys():
+      ptr = bufs[key].data.ctypes.data
+      yuv_size = self.frame_buf_params[key][3]
+      cache_key = (key, ptr)
+      if cache_key not in self._blob_cache:
+        self._blob_cache[cache_key] = Tensor.from_blob(ptr, (yuv_size,), dtype='uint8', device=self.DEV)
+      self.full_frames[key] = self._blob_cache[cache_key]
+
+    desire_key = next(k for k in self.npy if k.startswith('desire'))
+    inputs[desire_key][0] = 0
+    self.npy[desire_key][:] = np.where(inputs[desire_key] - self.prev_desire > .99, inputs[desire_key], 0)
+    self.prev_desire[:] = inputs[desire_key]
+    if 'traffic_convention' in self.npy and 'traffic_convention' in inputs:
+      self.npy['traffic_convention'][:] = inputs['traffic_convention']
+
+    road_key = next(n for n in bufs if 'big' not in n)
+    wide_key = next(n for n in bufs if 'big' in n)
+    self.npy['tfm'][:, :] = transforms[road_key].reshape(3, 3)
+    self.npy['big_tfm'][:, :] = transforms[wide_key].reshape(3, 3)
+
+    if prepare_only:
+      self._warp_enqueue(**self.input_queues, frame=self.full_frames[road_key], big_frame=self.full_frames[wide_key])
+      return None
+
+    raw_outputs = self._run_policy(**self.input_queues, frame=self.full_frames[road_key], big_frame=self.full_frames[wide_key])
+
+    if self._combined_model_type == 'supercombo':
+      model_output = raw_outputs.numpy().flatten()
+      sliced = {k: model_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
+      outputs = self.parser.parse_outputs(sliced)
+    else:
+      vision_output = raw_outputs[0].numpy().flatten()
+      policy_output = raw_outputs[1].numpy().flatten()
+      vision_sliced = {k: vision_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
+      policy_sliced = {k: policy_output[np.newaxis, v] for k, v in self.policy_output_slices.items()}
+      outputs = {**self.parser.parse_vision_outputs(vision_sliced), **self.parser.parse_policy_outputs(policy_sliced)}
+
+    return outputs
+
+  def _run_separate(self, bufs, transforms, inputs, prepare_only):
     inputs[self.desire_key][0] = 0
     new_desire = np.where(inputs[self.desire_key] - self.prev_desire > .99, inputs[self.desire_key], 0)
     self.prev_desire[:] = inputs[self.desire_key]
@@ -186,10 +352,6 @@ def main(demo=False):
   setproctitle(PROCESS_NAME)
   config_realtime_process(7, 54)
 
-  cloudlog.warning("loading model")
-  model = ModelState()
-  cloudlog.warning("models loaded, modeld starting")
-
   # visionipc clients
   while True:
     available_streams = VisionIpcClient.available_streams("camerad", block=False)
@@ -212,6 +374,10 @@ def main(demo=False):
   cloudlog.warning(f"connected main cam with buffer size: {vipc_client_main.buffer_len} ({vipc_client_main.width} x {vipc_client_main.height})")
   if use_extra_client:
     cloudlog.warning(f"connected extra cam with buffer size: {vipc_client_extra.buffer_len} ({vipc_client_extra.width} x {vipc_client_extra.height})")
+
+  cloudlog.warning("loading model")
+  model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height)
+  cloudlog.warning(f"models loaded (combined={model.use_combined}), modeld starting")
 
   # messaging
   pm = PubMaster(["modelV2", "drivingModelData", "cameraOdometry", "modelDataV2SP"])
@@ -318,8 +484,8 @@ def main(demo=False):
     if prepare_only:
       cloudlog.error(f"skipping model eval. Dropped {vipc_dropped_frames} frames")
 
-    bufs = {name: buf_extra if 'big' in name else buf_main for name in model.model_runner.vision_input_names}
-    transforms = {name: model_transform_extra if 'big' in name else model_transform_main for name in model.model_runner.vision_input_names}
+    bufs = {name: buf_extra if 'big' in name else buf_main for name in model.vision_input_names}
+    transforms = {name: model_transform_extra if 'big' in name else model_transform_main for name in model.vision_input_names}
     inputs:dict[str, np.ndarray] = {
       model.desire_key: vec_desire,
       'traffic_convention': traffic_convention,
