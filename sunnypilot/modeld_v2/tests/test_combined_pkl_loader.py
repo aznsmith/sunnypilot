@@ -7,42 +7,13 @@ import openpilot.sunnypilot.models.helpers as helpers
 import openpilot.sunnypilot.models.runners.helpers as runner_helpers
 import openpilot.sunnypilot.modeld_v2.modeld as modeld_module
 from openpilot.sunnypilot.modeld_v2.modeld import _find_combined_pkl
+from openpilot.sunnypilot.modeld_v2.tests.conftest import DummyArtifact, DummyModelType, DummyModel, DummyBundle
 
 ModelState = modeld_module.ModelState
 
 
 def _noop_jit(**kwargs):
   pass
-
-
-class DummyOverride:
-  def __init__(self, key, value):
-    self.key = key
-    self.value = value
-
-
-class DummyArtifact:
-  def __init__(self, file_name):
-    self.file_name = file_name
-
-
-class DummyModelType:
-  def __init__(self, raw):
-    self.raw = raw
-
-
-class DummyModel:
-  def __init__(self, type_str, artifact_file):
-    self.type = DummyModelType(type_str)
-    self.artifact = DummyArtifact(artifact_file)
-
-
-class DummyBundle:
-  def __init__(self, models=None, is_20hz=True):
-    self.overrides = [DummyOverride('lat', '.1'), DummyOverride('long', '.3')]
-    self.generation = 10
-    self.is20hz = is_20hz
-    self.models = models or []
 
 
 class TestFindCombinedPkl:

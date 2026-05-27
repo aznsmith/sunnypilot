@@ -2,11 +2,10 @@ import numpy as np
 import pytest
 from typing import Any
 
-import openpilot.sunnypilot.models.helpers as helpers
-import openpilot.sunnypilot.models.runners.helpers as runner_helpers
 import openpilot.sunnypilot.modeld_v2.modeld as modeld_module
 from openpilot.sunnypilot.modeld_v2.constants import ModelConstants
 from openpilot.sunnypilot.models.split_model_constants import SplitModelConstants
+from openpilot.sunnypilot.modeld_v2.tests.conftest import DummyBundle, DummyModelRunner
 
 ModelState = modeld_module.ModelState
 
@@ -90,39 +89,6 @@ ARCHETYPES = {
 }
 
 
-class DummyOverride:
-  def __init__(self, key: str, value: str) -> None:
-    self.key = key
-    self.value = value
-
-
-class DummyBundle:
-  def __init__(self, is_20hz: bool = False) -> None:
-    self.overrides = [DummyOverride('lat', '.1'), DummyOverride('long', '.3')]
-    self.generation = 10
-    self.is20hz = is_20hz
-    self.models = []
-
-
-class DummyModelRunner:
-  def __init__(self, input_shapes: dict[str, tuple], is_20hz: bool = False,
-               constants_class: Any = None) -> None:
-    self.input_shapes = input_shapes
-    self.is_20hz = is_20hz
-    self.is_20hz_3d = False
-    self.vision_input_names: list[str] = []
-    self.constants = (constants_class or ModelConstants)()
-
-  def prepare_inputs(self, numpy_inputs):
-    return None
-
-  def run_model(self):
-    return {
-      'hidden_state': np.zeros((1, self.constants.FEATURE_LEN), dtype=np.float32),
-      'desired_curvature': np.zeros((1, 1), dtype=np.float32),
-    }
-
-
 def make_fixtures(archetype: Archetype):
   is_split = archetype.model_types & {'vision', 'policy', 'offPolicy', 'onPolicy'}
   constants_class = SplitModelConstants if is_split else ModelConstants
@@ -185,28 +151,22 @@ class TestRunnerSelection:
 
 class TestWarpBufferLength:
   @pytest.mark.parametrize("archetype_name", list(ARCHETYPES.keys()))
-  def test_warp_buffer_length(self, archetype_name, monkeypatch):
+  def test_warp_buffer_length(self, archetype_name, patch_modeld):
     arch = ARCHETYPES[archetype_name]
     bundle, runner = make_fixtures(arch)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
     assert state.warp.buffer_length == arch.expected_buffer_length, \
       f"{arch.name}: warp buffer_length={state.warp.buffer_length}, expected {arch.expected_buffer_length}"
 
-  def test_wrong_is_20hz_gives_wrong_buffer_length(self, monkeypatch):
+  def test_wrong_is_20hz_gives_wrong_buffer_length(self, patch_modeld):
     arch = ARCHETYPES['supercombo_non20hz']
     bundle = DummyBundle(is_20hz=True)
     runner = DummyModelRunner(arch.shapes, is_20hz=True)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
     assert state.warp.buffer_length != arch.expected_buffer_length, \
@@ -215,14 +175,11 @@ class TestWarpBufferLength:
 
 class TestConstantsSelection:
   @pytest.mark.parametrize("archetype_name", list(ARCHETYPES.keys()))
-  def test_constants_class(self, archetype_name, monkeypatch):
+  def test_constants_class(self, archetype_name, patch_modeld):
     arch = ARCHETYPES[archetype_name]
     bundle, runner = make_fixtures(arch)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
     assert type(state.constants) == type(runner.constants), \
@@ -232,15 +189,12 @@ class TestConstantsSelection:
     ('supercombo_non20hz', SplitModelConstants),
     ('vision_policy_split', ModelConstants),
   ])
-  def test_wrong_constants_detected(self, archetype_name, wrong_constants, monkeypatch):
+  def test_wrong_constants_detected(self, archetype_name, wrong_constants, patch_modeld):
     arch = ARCHETYPES[archetype_name]
     bundle, runner = make_fixtures(arch)
     runner.constants = wrong_constants()
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
     assert type(state.constants) != type(arch.expected_constants_class()), \
@@ -249,14 +203,11 @@ class TestConstantsSelection:
 
 class TestTemporalModeDetection:
   @pytest.mark.parametrize("archetype_name", list(ARCHETYPES.keys()))
-  def test_temporal_modes_correct(self, archetype_name, monkeypatch):
+  def test_temporal_modes_correct(self, archetype_name, patch_modeld):
     arch = ARCHETYPES[archetype_name]
     bundle, runner = make_fixtures(arch)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
 
@@ -271,14 +222,11 @@ class TestTemporalModeDetection:
         f"{arch.name}.{key}: temporal mode={detected_mode}, expected {expected_mode}"
 
   @pytest.mark.parametrize("archetype_name", list(ARCHETYPES.keys()))
-  def test_temporal_idxs_map_values(self, archetype_name, monkeypatch):
+  def test_temporal_idxs_map_values(self, archetype_name, patch_modeld):
     arch = ARCHETYPES[archetype_name]
     bundle, runner = make_fixtures(arch)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
 
@@ -296,14 +244,11 @@ class TestTemporalModeDetection:
                                     err_msg=f"{arch.name}.{key}: temporal indices mismatch")
 
   @pytest.mark.parametrize("archetype_name", list(ARCHETYPES.keys()))
-  def test_temporal_buffer_shapes(self, archetype_name, monkeypatch):
+  def test_temporal_buffer_shapes(self, archetype_name, patch_modeld):
     arch = ARCHETYPES[archetype_name]
     bundle, runner = make_fixtures(arch)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
 
@@ -327,14 +272,11 @@ class TestTemporalModeDetection:
       assert buf.shape == expected_shape, \
         f"{arch.name}.{key}: buffer shape {buf.shape} != expected {expected_shape}"
 
-  def test_temporal_idxs_within_buffer_bounds(self, monkeypatch):
+  def test_temporal_idxs_within_buffer_bounds(self, patch_modeld):
     for archetype_name, arch in ARCHETYPES.items():
       bundle, runner = make_fixtures(arch)
 
-      monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-      monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-      monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-      monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+      patch_modeld(bundle, runner)
 
       state = ModelState()
 
@@ -349,15 +291,12 @@ class TestTemporalModeDetection:
 
 
 class TestCrossArchetypeMismatch:
-  def test_split_shapes_with_non20hz_flag_wrong_buffer_length(self, monkeypatch):
+  def test_split_shapes_with_non20hz_flag_wrong_buffer_length(self, patch_modeld):
     arch = ARCHETYPES['vision_policy_split']
     bundle = DummyBundle(is_20hz=False)
     runner = DummyModelRunner(arch.shapes, is_20hz=False)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
     assert state.warp.buffer_length == 2, \
@@ -365,15 +304,12 @@ class TestCrossArchetypeMismatch:
     assert state.warp.buffer_length != arch.expected_buffer_length, \
       "Mismatch confirms wrong is_20hz propagates to wrong buffer_length"
 
-  def test_non20hz_shapes_with_20hz_flag_wrong_buffer_length(self, monkeypatch):
+  def test_non20hz_shapes_with_20hz_flag_wrong_buffer_length(self, patch_modeld):
     arch = ARCHETYPES['supercombo_non20hz']
     bundle = DummyBundle(is_20hz=True)
     runner = DummyModelRunner(arch.shapes, is_20hz=True)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
     assert state.warp.buffer_length == 5, \
@@ -403,14 +339,11 @@ class TestCrossArchetypeMismatch:
 
 class TestNumpyInputAllocation:
   @pytest.mark.parametrize("archetype_name", list(ARCHETYPES.keys()))
-  def test_all_policy_inputs_allocated(self, archetype_name, monkeypatch):
+  def test_all_policy_inputs_allocated(self, archetype_name, patch_modeld):
     arch = ARCHETYPES[archetype_name]
     bundle, runner = make_fixtures(arch)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
 
@@ -423,14 +356,11 @@ class TestNumpyInputAllocation:
         f"{arch.name}.{key}: shape {state.numpy_inputs[key].shape} != expected {shape}"
 
   @pytest.mark.parametrize("archetype_name", list(ARCHETYPES.keys()))
-  def test_desire_key_detection(self, archetype_name, monkeypatch):
+  def test_desire_key_detection(self, archetype_name, patch_modeld):
     arch = ARCHETYPES[archetype_name]
     bundle, runner = make_fixtures(arch)
 
-    monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    monkeypatch.setattr(runner_helpers, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_model_runner', lambda: runner, raising=False)
-    monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
+    patch_modeld(bundle, runner)
 
     state = ModelState()
     desire_key = state.desire_key

@@ -165,6 +165,23 @@ def make_run_vision_multi_policy(vision_runner, policy_runners, nv12: NV12Frame,
   return run_multi_policy
 
 
+def _warmup_and_serialize(run_jit, input_queues, npy, nv12):
+  for i in range(3):
+    np.random.seed(42 + i)
+    frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8').realize()
+    big_frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8').realize()
+    for v in npy.values():
+      v[:] = np.random.randn(*v.shape).astype(v.dtype)
+    Device.default.synchronize()
+    st = time.perf_counter()
+    outs = run_jit(**input_queues, frame=frame, big_frame=big_frame)
+    mt = time.perf_counter()
+    Device.default.synchronize()
+    et = time.perf_counter()
+    print(f"  [{i + 1}/3] enqueue {(mt - st) * 1e3:6.2f} ms -- total {(et - st) * 1e3:6.2f} ms")
+  return pickle.loads(pickle.dumps(run_jit))
+
+
 def compile_supercombo(nv12: NV12Frame, model_w, model_h, prepare_only, frame_skip,
                        model_runner, metadata):
   print(f"Compiling combined supercombo JIT for {nv12.width}x{nv12.height} (prepare_only={prepare_only})...")
@@ -178,21 +195,7 @@ def compile_supercombo(nv12: NV12Frame, model_w, model_h, prepare_only, frame_sk
 
   input_queues, npy = make_supercombo_input_queues(input_shapes, frame_skip, Device.DEFAULT)
 
-  for i in range(3):
-    np.random.seed(42 + i)
-    frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8').realize()
-    big_frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8').realize()
-    for v in npy.values():
-      v[:] = np.random.randn(*v.shape).astype(v.dtype)
-    Device.default.synchronize()
-    st = time.perf_counter()
-    outs = run_jit(frame=frame, big_frame=big_frame, **input_queues)
-    mt = time.perf_counter()
-    Device.default.synchronize()
-    et = time.perf_counter()
-    print(f"  [{i + 1}/3] enqueue {(mt - st) * 1e3:6.2f} ms -- total {(et - st) * 1e3:6.2f} ms")
-
-  run_jit = pickle.loads(pickle.dumps(run_jit))
+  run_jit = _warmup_and_serialize(run_jit, input_queues, npy, nv12)
   return run_jit
 
 
@@ -210,21 +213,7 @@ def compile_multi_policy(nv12: NV12Frame, model_w, model_h, prepare_only, frame_
 
   input_queues, npy = make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, Device.DEFAULT)
 
-  for i in range(3):
-    np.random.seed(42 + i)
-    frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8').realize()
-    big_frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8').realize()
-    for v in npy.values():
-      v[:] = np.random.randn(*v.shape).astype(v.dtype)
-    Device.default.synchronize()
-    st = time.perf_counter()
-    outs = run_jit(**input_queues, frame=frame, big_frame=big_frame)
-    mt = time.perf_counter()
-    Device.default.synchronize()
-    et = time.perf_counter()
-    print(f"  [{i + 1}/3] enqueue {(mt - st) * 1e3:6.2f} ms -- total {(et - st) * 1e3:6.2f} ms")
-
-  run_jit = pickle.loads(pickle.dumps(run_jit))
+  run_jit = _warmup_and_serialize(run_jit, input_queues, npy, nv12)
   return run_jit
 
 

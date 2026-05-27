@@ -115,18 +115,7 @@ class ModelState(ModelStateBase):
     self.DEV = Device.DEFAULT
 
     metadata = jits['metadata']
-    if 'vision' in metadata and 'policy' in metadata:
-      vision_metadata = metadata['vision']
-      policy_metadata = metadata['policy']
-      self.vision_output_slices = vision_metadata['output_slices']
-      self.policy_output_slices = policy_metadata['output_slices']
-      vision_input_shapes = vision_metadata['input_shapes']
-      policy_input_shapes = policy_metadata['input_shapes']
-      self._combined_model_type = 'split'
-      self._vision_input_names = [k for k in vision_input_shapes if 'img' in k]
-      frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
-      self.input_queues, self.npy = make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device=self.DEV)
-    elif 'model' in metadata:
+    if 'model' in metadata:
       model_metadata = metadata['model']
       self.vision_output_slices = model_metadata['output_slices']
       self.policy_output_slices = {}
@@ -136,14 +125,18 @@ class ModelState(ModelStateBase):
       frame_skip = derive_frame_skip({}, model_metadata['input_shapes'])
       self.input_queues, self.npy = make_supercombo_input_queues(model_metadata['input_shapes'], frame_skip, device=self.DEV)
     else:
-      first_policy_key = next(k for k in metadata if k not in ('vision',))
       vision_metadata = metadata['vision']
-      policy_metadata = metadata[first_policy_key]
+      if 'policy' in metadata:
+        policy_metadata = metadata['policy']
+        self._combined_model_type = 'split'
+      else:
+        first_policy_key = next(k for k in metadata if k not in ('vision',))
+        policy_metadata = metadata[first_policy_key]
+        self._combined_model_type = 'multi_policy'
       self.vision_output_slices = vision_metadata['output_slices']
       self.policy_output_slices = policy_metadata['output_slices']
       vision_input_shapes = vision_metadata['input_shapes']
       policy_input_shapes = policy_metadata['input_shapes']
-      self._combined_model_type = 'multi_policy'
       self._vision_input_names = [k for k in vision_input_shapes if 'img' in k]
       frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
       self.input_queues, self.npy = make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device=self.DEV)
@@ -197,21 +190,22 @@ class ModelState(ModelStateBase):
     self.temporal_idxs_map = {}
 
     for key, shape in self.model_runner.input_shapes.items():
-      if key not in self.model_runner.vision_input_names:
+      if key not in self.model_runner.vision_input_names: # Policy inputs
         self.numpy_inputs[key] = np.zeros(shape, dtype=np.float32)
 
+        # Temporal input: shape is [batch, history, features]
         if len(shape) == 3 and shape[1] > 1:
-          buffer_history_len = shape[1] * 4 if shape[1] < 99 else shape[1]
+          buffer_history_len = shape[1] * 4 if shape[1] < 99 else shape[1]  # Allow for higher history buffers in the future
           feature_len = shape[2]
           features_buffer_shape = self.model_runner.input_shapes.get('features_buffer')
-          if shape[1] in (24, 25) and features_buffer_shape is not None and features_buffer_shape[1] == 24:
+          if shape[1] in (24, 25) and features_buffer_shape is not None and features_buffer_shape[1] == 24:  # 20Hz
             buffer_history_len = (features_buffer_shape[1] + 1) * 4
             step = int(-buffer_history_len / shape[1])
             self.temporal_idxs_map[key] = np.arange(step, step * (shape[1] + 1), step)[::-1]
-          elif shape[1] == 25:
+          elif shape[1] == 25:  # Split
             skip = buffer_history_len // shape[1]
             self.temporal_idxs_map[key] = np.arange(buffer_history_len)[-1 - (skip * (shape[1] - 1))::skip]
-          elif shape[1] >= 99:
+          elif shape[1] >= 99:  # non20hz
             self.temporal_idxs_map[key] = np.arange(shape[1])
           self.temporal_buffers[key] = np.zeros((1, buffer_history_len, feature_len), dtype=np.float32)
 
@@ -250,7 +244,7 @@ class ModelState(ModelStateBase):
         self._blob_cache[cache_key] = Tensor.from_blob(ptr, (yuv_size,), dtype='uint8', device=self.DEV)
       self.full_frames[key] = self._blob_cache[cache_key]
 
-    desire_key = next(k for k in self.npy if k.startswith('desire'))
+    desire_key = self.desire_key
     inputs[desire_key][0] = 0
     self.npy[desire_key][:] = np.where(inputs[desire_key] - self.prev_desire > .99, inputs[desire_key], 0)
     self.prev_desire[:] = inputs[desire_key]

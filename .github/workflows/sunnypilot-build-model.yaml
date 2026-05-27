@@ -174,55 +174,42 @@ jobs:
           # Generate metadata for all ONNX files
           find "${{ env.MODELS_DIR }}" -maxdepth 1 -name '*.onnx' | while IFS= read -r onnx_file; do
             echo "Generating metadata: $onnx_file"
-            ${TG_FLAGS} python3 "${{ env.MODELS_DIR }}/../get_model_metadata.py" "$onnx_file" || true
+            env ${TG_FLAGS} python3 "${{ env.MODELS_DIR }}/../get_model_metadata.py" "$onnx_file" || true
           done
 
-          # Detect model type and compile combined JIT
+          # Detect model type and build compile args
           VISION_ONNX="${{ env.MODELS_DIR }}/driving_vision.onnx"
           POLICY_ONNX="${{ env.MODELS_DIR }}/driving_policy.onnx"
           OFF_POLICY_ONNX="${{ env.MODELS_DIR }}/driving_off_policy.onnx"
           ON_POLICY_ONNX="${{ env.MODELS_DIR }}/driving_on_policy.onnx"
           SUPERCOMBO_ONNX="${{ env.MODELS_DIR }}/supercombo.onnx"
 
+          MODEL_TYPE="" ONNX_ARGS="" OUTPUT_NAME=""
           if [ -f "$VISION_ONNX" ]; then
+            ONNX_ARGS="--vision-onnx $VISION_ONNX"
             if [ -f "$ON_POLICY_ONNX" ] && [ -f "$OFF_POLICY_ONNX" ]; then
-              echo "Detected: vision + on-policy + off-policy"
-              ${TG_FLAGS} python3 "$COMPILE_MODELD" \
-                --model-type vision_multi_policy \
-                --model-size $MODEL_SIZE \
-                --camera-resolutions $CAMERA_RES \
-                --vision-onnx "$VISION_ONNX" \
-                --off-policy-onnx "$OFF_POLICY_ONNX" \
-                --on-policy-onnx "$ON_POLICY_ONNX" \
-                --output "${{ env.MODELS_DIR }}/driving_combined_tinygrad.pkl"
+              MODEL_TYPE=vision_multi_policy OUTPUT_NAME=driving_combined_tri_tinygrad.pkl
+              ONNX_ARGS="$ONNX_ARGS --off-policy-onnx $OFF_POLICY_ONNX --on-policy-onnx $ON_POLICY_ONNX"
             elif [ -f "$OFF_POLICY_ONNX" ] && [ -f "$POLICY_ONNX" ]; then
-              echo "Detected: vision + policy + off-policy"
-              ${TG_FLAGS} python3 "$COMPILE_MODELD" \
-                --model-type vision_multi_policy \
-                --model-size $MODEL_SIZE \
-                --camera-resolutions $CAMERA_RES \
-                --vision-onnx "$VISION_ONNX" \
-                --policy-onnx "$POLICY_ONNX" \
-                --off-policy-onnx "$OFF_POLICY_ONNX" \
-                --output "${{ env.MODELS_DIR }}/driving_combined_tinygrad.pkl"
+              MODEL_TYPE=vision_multi_policy OUTPUT_NAME=driving_combined_multi_tinygrad.pkl
+              ONNX_ARGS="$ONNX_ARGS --policy-onnx $POLICY_ONNX --off-policy-onnx $OFF_POLICY_ONNX"
             elif [ -f "$POLICY_ONNX" ]; then
-              echo "Detected: vision + policy"
-              ${TG_FLAGS} python3 "$COMPILE_MODELD" \
-                --model-type vision_policy \
-                --model-size $MODEL_SIZE \
-                --camera-resolutions $CAMERA_RES \
-                --vision-onnx "$VISION_ONNX" \
-                --policy-onnx "$POLICY_ONNX" \
-                --output "${{ env.MODELS_DIR }}/driving_combined_tinygrad.pkl"
+              MODEL_TYPE=vision_policy OUTPUT_NAME=driving_combined_tinygrad.pkl
+              ONNX_ARGS="$ONNX_ARGS --policy-onnx $POLICY_ONNX"
             fi
           elif [ -f "$SUPERCOMBO_ONNX" ]; then
-            echo "Detected: supercombo"
-            ${TG_FLAGS} python3 "$COMPILE_MODELD" \
-              --model-type supercombo \
+            MODEL_TYPE=supercombo OUTPUT_NAME=driving_combined_supercombo_tinygrad.pkl
+            ONNX_ARGS="--supercombo-onnx $SUPERCOMBO_ONNX"
+          fi
+
+          if [ -n "$MODEL_TYPE" ]; then
+            echo "Detected: $MODEL_TYPE -> $OUTPUT_NAME"
+            env ${TG_FLAGS} python3 "$COMPILE_MODELD" \
+              --model-type $MODEL_TYPE \
               --model-size $MODEL_SIZE \
               --camera-resolutions $CAMERA_RES \
-              --supercombo-onnx "$SUPERCOMBO_ONNX" \
-              --output "${{ env.MODELS_DIR }}/driving_combined_tinygrad.pkl"
+              $ONNX_ARGS \
+              --output "${{ env.MODELS_DIR }}/$OUTPUT_NAME"
           fi
 
           # Legacy: also compile separate pkls for backward compat
