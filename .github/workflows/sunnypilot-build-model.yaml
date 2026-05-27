@@ -168,7 +168,7 @@ jobs:
 
           COMPILE_MODELD="${{ github.workspace }}/sunnypilot/modeld_v2/compile_modeld.py"
           CAMERA_RES="1928x1208 1344x760"
-          MODEL_SIZE="256x128"
+          MODEL_SIZE="512x256"
           TG_FLAGS="DEV=QCOM FLOAT16=1 NOLOCALS=1 JIT_BATCH_SIZE=0"
 
           # Generate metadata for all ONNX files

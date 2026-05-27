@@ -20,7 +20,7 @@ MODEL_TYPES = ('vision_policy', 'supercombo', 'vision_multi_policy')
 
 
 def derive_frame_skip(vision_input_shapes, policy_input_shapes):
-  fb = policy_input_shapes.get('features_buffer', policy_input_shapes.get('features_buffer'))
+  fb = policy_input_shapes.get('features_buffer')
   if fb is None:
     return 1
   fb_history = fb[1]

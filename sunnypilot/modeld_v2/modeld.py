@@ -149,7 +149,7 @@ class ModelState(ModelStateBase):
     from openpilot.sunnypilot.modeld_v2.parse_model_outputs import Parser as CombinedParser
     self.parser = SplitParser() if self._combined_model_type != 'supercombo' else CombinedParser()
 
-    is_20hz = bundle.is20hz if bundle else False
+    is_20hz = bundle.is20hz if bundle else self._combined_model_type in ('split', 'multi_policy')
     if is_20hz:
       from openpilot.sunnypilot.models.split_model_constants import SplitModelConstants
       self.constants = SplitModelConstants()
