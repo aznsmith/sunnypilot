@@ -137,7 +137,6 @@ class TestModelStateCombinedInit:
     assert state.warp is not None
 
   def test_use_combined_flag_true_when_pkl_exists(self, tmp_path, monkeypatch):
-    import json
     from openpilot.system.hardware import hw
 
     vision_slices = {'hidden_state': slice(0, 512), 'plan': slice(512, 1024)}
@@ -167,13 +166,6 @@ class TestModelStateCombinedInit:
     monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
     monkeypatch.setattr(hw.Paths, 'model_root', staticmethod(lambda: str(tmp_path)))
 
-    tg_devices_path = tmp_path / 'tg_input_devices.json'
-    with open(tg_devices_path, 'w') as f:
-      json.dump({modeld_module.PROCESS_NAME: 'CPU'}, f)
-
-    from openpilot.selfdrive.modeld import helpers as modeld_helpers
-    monkeypatch.setattr(modeld_helpers, 'TG_INPUT_DEVICES_PATH', tg_devices_path)
-
     state = ModelState(cam_w=1928, cam_h=1208)
     assert state.use_combined is True
     assert state.model_runner is None
@@ -183,11 +175,11 @@ class TestModelStateCombinedInit:
 
 
 class TestVisionInputNames:
-  def test_combined_path_returns_img_pair(self, monkeypatch):
+  def test_combined_path_returns_stored_names(self, monkeypatch):
     state = ModelState.__new__(ModelState)
     state.use_combined = True
-    state.model_runner = None
-    assert state.vision_input_names == ['img', 'big_img']
+    state._vision_input_names = ['input_imgs', 'big_input_imgs']
+    assert state.vision_input_names == ['input_imgs', 'big_input_imgs']
 
   def test_separate_path_delegates_to_runner(self, monkeypatch):
     state = ModelState.__new__(ModelState)

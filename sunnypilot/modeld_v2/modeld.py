@@ -106,13 +106,13 @@ class ModelState(ModelStateBase):
     from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
     from openpilot.selfdrive.modeld.compile_modeld import make_input_queues
     from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip
-    from openpilot.selfdrive.modeld.helpers import get_tg_input_devices
+    from tinygrad.device import Device
 
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
     with open(pkl_path, 'rb') as f:
       jits = pickle.load(f)
 
-    self.DEV = get_tg_input_devices(PROCESS_NAME)
+    self.DEV = Device.DEFAULT
 
     metadata = jits['metadata']
     if 'vision' in metadata and 'policy' in metadata:
@@ -123,6 +123,7 @@ class ModelState(ModelStateBase):
       vision_input_shapes = vision_metadata['input_shapes']
       policy_input_shapes = policy_metadata['input_shapes']
       self._combined_model_type = 'split'
+      self._vision_input_names = [k for k in vision_input_shapes if 'img' in k]
       frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
       self.input_queues, self.npy = make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device=self.DEV)
     elif 'model' in metadata:
@@ -130,6 +131,7 @@ class ModelState(ModelStateBase):
       self.vision_output_slices = model_metadata['output_slices']
       self.policy_output_slices = {}
       self._combined_model_type = 'supercombo'
+      self._vision_input_names = [k for k in model_metadata['input_shapes'] if 'img' in k]
       from openpilot.sunnypilot.modeld_v2.compile_modeld import make_supercombo_input_queues
       frame_skip = derive_frame_skip({}, model_metadata['input_shapes'])
       self.input_queues, self.npy = make_supercombo_input_queues(model_metadata['input_shapes'], frame_skip, device=self.DEV)
@@ -142,6 +144,7 @@ class ModelState(ModelStateBase):
       vision_input_shapes = vision_metadata['input_shapes']
       policy_input_shapes = policy_metadata['input_shapes']
       self._combined_model_type = 'multi_policy'
+      self._vision_input_names = [k for k in vision_input_shapes if 'img' in k]
       frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
       self.input_queues, self.npy = make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device=self.DEV)
 
@@ -160,14 +163,17 @@ class ModelState(ModelStateBase):
     self.prev_desire = np.zeros(self.constants.DESIRE_LEN, dtype=np.float32)
     self.full_frames: dict = {}
     self._blob_cache: dict = {}
-    self.frame_buf_params = {k: get_nv12_info(cam_w, cam_h) for k in ('img', 'big_img')}
+    nv12_info = get_nv12_info(cam_w, cam_h)
+    self.frame_buf_params = {k: nv12_info for k in self._vision_input_names}
 
     self._run_policy = jits[(cam_w, cam_h)]['run_policy']
     self._warp_enqueue = jits[(cam_w, cam_h)]['warp_enqueue']
+    road_name = next(k for k in self._vision_input_names if 'big' not in k)
+    yuv_size = self.frame_buf_params[road_name][3]
     self._warp_enqueue(
       **self.input_queues,
-      frame=Tensor(np.zeros(self.frame_buf_params['img'][3], dtype=np.uint8), device=self.DEV).contiguous().realize(),
-      big_frame=Tensor(np.zeros(self.frame_buf_params['big_img'][3], dtype=np.uint8), device=self.DEV).contiguous().realize())
+      frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.DEV).contiguous().realize(),
+      big_frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.DEV).contiguous().realize())
 
     self.model_runner = None
     self.warp = None
@@ -218,7 +224,7 @@ class ModelState(ModelStateBase):
   @property
   def vision_input_names(self) -> list[str]:
     if self.use_combined:
-      return ['img', 'big_img']
+      return self._vision_input_names
     return self.model_runner.vision_input_names
 
   @property

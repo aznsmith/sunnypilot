@@ -167,8 +167,8 @@ jobs:
           export PYTHONPATH="${PYTHONPATH}:${{ env.TINYGRAD_PATH }}:${{ github.workspace }}"
 
           COMPILE_MODELD="${{ github.workspace }}/sunnypilot/modeld_v2/compile_modeld.py"
-          CAMERA_RES="1928x1208 1344x760"
-          MODEL_SIZE="512x256"
+          MODEL_SIZE=$(python3 -c "from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE as s; print(f'{s[0]}x{s[1]}')")
+          CAMERA_RES=$(python3 -c "from openpilot.common.transformations.camera import _ar_ox_fisheye as a, _os_fisheye as o; print(f'{a.width}x{a.height} {o.width}x{o.height}')")
           TG_FLAGS="DEV=QCOM FLOAT16=1 NOLOCALS=1 JIT_BATCH_SIZE=0"
 
           # Generate metadata for all ONNX files

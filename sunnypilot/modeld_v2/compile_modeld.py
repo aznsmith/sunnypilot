@@ -54,7 +54,7 @@ def make_supercombo_input_queues(input_shapes, frame_skip, device):
           np.zeros((frame_skip * (shape[1] - 1) + 1, shape[0], shape[2]), dtype=np.float32),
           device=device).contiguous().realize()
       else:
-        npy_keys[key] = np.zeros(shape[1:], dtype=np.float32)
+        npy_keys[key] = np.zeros(shape, dtype=np.float32)
     elif len(shape) == 2:
       npy_keys[key] = np.zeros(shape, dtype=np.float32)
 
@@ -81,9 +81,12 @@ def make_run_supercombo(model_runner, nv12: NV12Frame, model_w, model_h,
   sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
 
   desire_key = next(k for k in input_shapes if k.startswith('desire'))
+  img_keys = sorted([k for k in input_shapes if 'img' in k])
+  road_img_key = next(k for k in img_keys if 'big' not in k)
+  wide_img_key = next(k for k in img_keys if 'big' in k)
   extra_policy_keys = [k for k in input_shapes
                        if k not in (desire_key, 'features_buffer', 'traffic_convention')
-                       and 'img' not in k and len(input_shapes[k]) == 2]
+                       and 'img' not in k]
 
   def run_supercombo(img_q, big_img_q, feat_q, desire_q,
                      frame, big_frame, **kwargs):
@@ -107,7 +110,7 @@ def make_run_supercombo(model_runner, nv12: NV12Frame, model_w, model_h,
     desire_buf = shift_and_sample(desire_q, desire.reshape(1, 1, -1), sample_desire_fn)
     feat_buf = sample_skip_fn(feat_q)
 
-    inputs = {'img': img, 'big_img': big_img,
+    inputs = {road_img_key: img, wide_img_key: big_img,
               desire_key: desire_buf, 'features_buffer': feat_buf,
               'traffic_convention': traffic_convention}
     for k in extra_policy_keys:
@@ -239,6 +242,7 @@ if __name__ == "__main__":
   p.add_argument('--model-type', choices=MODEL_TYPES, required=True)
   p.add_argument('--model-size', type=_parse_size, required=True, help='model input WxH')
   p.add_argument('--camera-resolutions', type=_parse_size, nargs='+', required=True)
+  p.add_argument('--frame-skip', type=int, default=None, help='frame skip value (auto-derived if not provided)')
   p.add_argument('--output', required=True)
 
   p.add_argument('--vision-onnx', help='vision ONNX (for split models)')
@@ -257,8 +261,8 @@ if __name__ == "__main__":
     out['metadata']['vision'] = make_metadata_dict(args.vision_onnx)
     out['metadata']['policy'] = make_metadata_dict(args.policy_onnx)
 
-    frame_skip = derive_frame_skip(out['metadata']['vision']['input_shapes'],
-                                   out['metadata']['policy']['input_shapes'])
+    frame_skip = args.frame_skip if args.frame_skip is not None else derive_frame_skip(out['metadata']['vision']['input_shapes'],
+                                                                                       out['metadata']['policy']['input_shapes'])
 
     for cam_w, cam_h in args.camera_resolutions:
       nv12 = NV12Frame(cam_w, cam_h, *get_nv12_info(cam_w, cam_h))
@@ -275,7 +279,7 @@ if __name__ == "__main__":
     model_runner = OnnxRunner(args.supercombo_onnx)
     out['metadata']['model'] = make_metadata_dict(args.supercombo_onnx)
 
-    frame_skip = derive_frame_skip({}, out['metadata']['model']['input_shapes'])
+    frame_skip = args.frame_skip if args.frame_skip is not None else derive_frame_skip({}, out['metadata']['model']['input_shapes'])
 
     for cam_w, cam_h in args.camera_resolutions:
       nv12 = NV12Frame(cam_w, cam_h, *get_nv12_info(cam_w, cam_h))
@@ -306,8 +310,8 @@ if __name__ == "__main__":
       out['metadata'][name] = make_metadata_dict(onnx_path)
 
     first_policy_key = policy_onnxes[0][0]
-    frame_skip = derive_frame_skip(out['metadata']['vision']['input_shapes'],
-                                   out['metadata'][first_policy_key]['input_shapes'])
+    frame_skip = args.frame_skip if args.frame_skip is not None else derive_frame_skip(out['metadata']['vision']['input_shapes'],
+                                                                                       out['metadata'][first_policy_key]['input_shapes'])
 
     for cam_w, cam_h in args.camera_resolutions:
       nv12 = NV12Frame(cam_w, cam_h, *get_nv12_info(cam_w, cam_h))
