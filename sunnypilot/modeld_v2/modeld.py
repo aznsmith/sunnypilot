@@ -40,6 +40,8 @@ PROCESS_NAME = "selfdrive.modeld.modeld_tinygrad"
 
 
 def _find_combined_pkl(bundle):
+  if (override := os.environ.get('COMBINED_MODEL_PKL')) and os.path.exists(override):
+    return override
   if bundle is None or not bundle.models:
     return None
   from openpilot.system.hardware.hw import Paths
@@ -84,9 +86,14 @@ class ModelState(ModelStateBase):
   def __init__(self, cam_w: int = 0, cam_h: int = 0):
     ModelStateBase.__init__(self)
 
-    model_bundle = get_active_bundle()
+    env_pkl = os.environ.get('COMBINED_MODEL_PKL')
+    if env_pkl and os.path.exists(env_pkl) and cam_w > 0:
+      model_bundle = None
+    else:
+      model_bundle = get_active_bundle()
+
     self.generation = model_bundle.generation if model_bundle is not None else None
-    overrides = {override.key: override.value for override in model_bundle.overrides}
+    overrides = {override.key: override.value for override in model_bundle.overrides} if model_bundle else {}
 
     self.LAT_SMOOTH_SECONDS = float(overrides.get('lat', ".0"))
     self.LONG_SMOOTH_SECONDS = float(overrides.get('long', ".0"))
