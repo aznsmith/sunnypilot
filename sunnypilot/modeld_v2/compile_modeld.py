@@ -19,6 +19,12 @@ from openpilot.selfdrive.modeld.compile_modeld import (
 MODEL_TYPES = ('vision_policy', 'supercombo', 'vision_multi_policy')
 
 
+def normalize_policy_input_shapes(policy_input_shapes):
+  if 'desire_pulse' not in policy_input_shapes and 'desire' in policy_input_shapes:
+    policy_input_shapes = {('desire_pulse' if k == 'desire' else k): v for k, v in policy_input_shapes.items()}
+  return policy_input_shapes
+
+
 def derive_frame_skip(vision_input_shapes, policy_input_shapes):
   fb = policy_input_shapes.get('features_buffer')
   if fb is None:
@@ -249,6 +255,7 @@ if __name__ == "__main__":
     policy_runner = OnnxRunner(args.policy_onnx)
     out['metadata']['vision'] = make_metadata_dict(args.vision_onnx)
     out['metadata']['policy'] = make_metadata_dict(args.policy_onnx)
+    out['metadata']['policy']['input_shapes'] = normalize_policy_input_shapes(out['metadata']['policy']['input_shapes'])
 
     frame_skip = args.frame_skip if args.frame_skip is not None else derive_frame_skip(out['metadata']['vision']['input_shapes'],
                                                                                        out['metadata']['policy']['input_shapes'])
@@ -297,6 +304,7 @@ if __name__ == "__main__":
       runner = OnnxRunner(onnx_path)
       policy_runners.append(runner)
       out['metadata'][name] = make_metadata_dict(onnx_path)
+      out['metadata'][name]['input_shapes'] = normalize_policy_input_shapes(out['metadata'][name]['input_shapes'])
 
     first_policy_key = policy_onnxes[0][0]
     frame_skip = args.frame_skip if args.frame_skip is not None else derive_frame_skip(out['metadata']['vision']['input_shapes'],
