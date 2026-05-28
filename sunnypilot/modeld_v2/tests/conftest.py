@@ -105,8 +105,8 @@ ARCHETYPES = {
     metadata_structure=_make_vision_policy_metadata(
       SPLIT_VISION_INPUT_SHAPES, SPLIT_POLICY_INPUT_SHAPES,
       SPLIT_VISION_SLICES, SPLIT_POLICY_SLICES),
-    model_stubs=[DummyModel('vision', 'driving_vision_test_tinygrad.pkl'),
-                 DummyModel('policy', 'driving_policy_test_tinygrad.pkl')],
+    model_stubs=[DummyModel('vision', 'driving_test_tinygrad.pkl'),
+                 DummyModel('policy', 'driving_test_tinygrad.pkl')],
     is_20hz=True,
     expected_model_type='split',
     expected_constants_class=SplitModelConstants,
@@ -118,8 +118,8 @@ ARCHETYPES = {
     metadata_structure=_make_multi_policy_metadata(
       SPLIT_VISION_INPUT_SHAPES, SPLIT_POLICY_INPUT_SHAPES,
       SPLIT_VISION_SLICES, SPLIT_POLICY_SLICES),
-    model_stubs=[DummyModel('vision', 'driving_vision_test_tinygrad.pkl'),
-                 DummyModel('offPolicy', 'driving_offpolicy_test_tinygrad.pkl')],
+    model_stubs=[DummyModel('vision', 'driving_test_tinygrad.pkl'),
+                 DummyModel('offPolicy', 'driving_test_tinygrad.pkl')],
     is_20hz=True,
     expected_model_type='multi_policy',
     expected_constants_class=SplitModelConstants,
@@ -131,9 +131,9 @@ ARCHETYPES = {
     metadata_structure=_make_tri_policy_metadata(
       SPLIT_VISION_INPUT_SHAPES, SPLIT_POLICY_INPUT_SHAPES,
       SPLIT_VISION_SLICES, SPLIT_POLICY_SLICES),
-    model_stubs=[DummyModel('vision', 'driving_vision_test_tinygrad.pkl'),
-                 DummyModel('onPolicy', 'driving_onpolicy_test_tinygrad.pkl'),
-                 DummyModel('offPolicy', 'driving_offpolicy_test_tinygrad.pkl')],
+    model_stubs=[DummyModel('vision', 'driving_test_tinygrad.pkl'),
+                 DummyModel('onPolicy', 'driving_test_tinygrad.pkl'),
+                 DummyModel('offPolicy', 'driving_test_tinygrad.pkl')],
     is_20hz=True,
     expected_model_type='multi_policy',
     expected_constants_class=SplitModelConstants,
@@ -143,7 +143,7 @@ ARCHETYPES = {
   'supercombo_non20hz': Archetype(
     name='supercombo_non20hz',
     metadata_structure=_make_supercombo_metadata(SUPERCOMBO_INPUT_SHAPES, SUPERCOMBO_SLICES),
-    model_stubs=[DummyModel('supercombo', 'supercombo_test_tinygrad.pkl')],
+    model_stubs=[DummyModel('supercombo', 'driving_test_tinygrad.pkl')],
     is_20hz=False,
     expected_model_type='supercombo',
     expected_constants_class=ModelConstants,
@@ -161,7 +161,7 @@ def make_pkl_data(archetype):
 
 
 def write_pkl(tmp_path, archetype):
-  pkl_path = tmp_path / 'driving_combined_test_tinygrad.pkl'
+  pkl_path = tmp_path / 'driving_test_tinygrad.pkl'
   with open(pkl_path, 'wb') as f:
     pickle.dump(make_pkl_data(archetype), f)
   return pkl_path

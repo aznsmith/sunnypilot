@@ -188,28 +188,28 @@ jobs:
           if [ -f "$VISION_ONNX" ]; then
             ONNX_ARGS="--vision-onnx $VISION_ONNX"
             if [ -f "$ON_POLICY_ONNX" ] && [ -f "$OFF_POLICY_ONNX" ]; then
-              MODEL_TYPE=vision_multi_policy OUTPUT_NAME=driving_combined_tri_tinygrad.pkl
+              MODEL_TYPE=vision_multi_policy
               ONNX_ARGS="$ONNX_ARGS --off-policy-onnx $OFF_POLICY_ONNX --on-policy-onnx $ON_POLICY_ONNX"
             elif [ -f "$OFF_POLICY_ONNX" ] && [ -f "$POLICY_ONNX" ]; then
-              MODEL_TYPE=vision_multi_policy OUTPUT_NAME=driving_combined_multi_tinygrad.pkl
+              MODEL_TYPE=vision_multi_policy
               ONNX_ARGS="$ONNX_ARGS --policy-onnx $POLICY_ONNX --off-policy-onnx $OFF_POLICY_ONNX"
             elif [ -f "$POLICY_ONNX" ]; then
-              MODEL_TYPE=vision_policy OUTPUT_NAME=driving_combined_tinygrad.pkl
+              MODEL_TYPE=vision_policy
               ONNX_ARGS="$ONNX_ARGS --policy-onnx $POLICY_ONNX"
             fi
           elif [ -f "$SUPERCOMBO_ONNX" ]; then
-            MODEL_TYPE=supercombo OUTPUT_NAME=driving_combined_supercombo_tinygrad.pkl
+            MODEL_TYPE=supercombo
             ONNX_ARGS="--supercombo-onnx $SUPERCOMBO_ONNX"
           fi
 
           if [ -n "$MODEL_TYPE" ]; then
-            echo "Detected: $MODEL_TYPE -> $OUTPUT_NAME"
+            echo "Detected: $MODEL_TYPE -> driving_tinygrad.pkl"
             env ${TG_FLAGS} python3 "$COMPILE_MODELD" \
               --model-type $MODEL_TYPE \
               --model-size $MODEL_SIZE \
               --camera-resolutions $CAMERA_RES \
               $ONNX_ARGS \
-              --output "${{ env.MODELS_DIR }}/$OUTPUT_NAME"
+              --output "${{ env.MODELS_DIR }}/driving_tinygrad.pkl"
           fi
 
       - name: Validate Model Outputs

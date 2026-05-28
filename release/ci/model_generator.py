@@ -81,38 +81,41 @@ def create_short_name(full_name):
   return result[:8]
 
 
-def generate_metadata(model_path: Path, output_dir: Path, short_name: str):
-  model_path = model_path
-  output_path = output_dir
+def _find_driving_pkl(output_path: Path) -> Path | None:
+  for pattern in ('driving_tinygrad.pkl', 'driving_*_tinygrad.pkl'):
+    matches = sorted(output_path.glob(pattern))
+    if matches:
+      return matches[0]
+  return None
+
+
+def generate_metadata(model_path: Path, output_dir: Path, short_name: str, driving_pkl: Path):
   base = model_path.stem
+  metadata_file = output_dir / f"{base}_metadata.pkl"
 
-  # Define output files for tinygrad and metadata
-  tinygrad_file = output_path / f"{base}_tinygrad.pkl"
-  metadata_file = output_path / f"{base}_metadata.pkl"
+  if short_name:
+    renamed_meta = output_dir / f"{base}_{short_name.lower()}_metadata.pkl"
+    if metadata_file.exists() and not renamed_meta.exists():
+      metadata_file = metadata_file.rename(renamed_meta)
+    elif renamed_meta.exists():
+      metadata_file = renamed_meta
 
-  if not tinygrad_file.exists() or not metadata_file.exists():
-    print(f"Error: Missing files for model {base} ({tinygrad_file} or {metadata_file})", file=sys.stderr)
+  if not metadata_file.exists():
+    print(f"Warning: Missing metadata for {base} ({metadata_file}), skipping", file=sys.stderr)
     return
 
-  # Calculate the sha256 hashes
-  with open(tinygrad_file, 'rb') as f:
+  with open(driving_pkl, 'rb') as f:
     tinygrad_hash = hashlib.sha256(f.read()).hexdigest()
 
   with open(metadata_file, 'rb') as f:
     metadata_hash = hashlib.sha256(f.read()).hexdigest()
 
-  # Rename the files if a custom file name is provided
-  if short_name:
-    tinygrad_file = tinygrad_file.rename(output_path / f"{base}_{short_name.lower()}_tinygrad.pkl")
-    metadata_file = metadata_file.rename(output_path / f"{base}_{short_name.lower()}_metadata.pkl")
-
-  # Build the metadata structure
   model_type = "offPolicy" if "off_policy" in base else "onPolicy" if "on_policy" in base else base.split("_")[-1]
 
-  model_metadata = {
+  return {
     "type": model_type,
     "artifact": {
-      "file_name": tinygrad_file.name,
+      "file_name": driving_pkl.name,
       "download_uri": {
         "url": "https://gitlab.com/sunnypilot/public/docs.sunnypilot.ai/-/raw/main/",
         "sha256": tinygrad_hash
@@ -126,9 +129,6 @@ def generate_metadata(model_path: Path, output_dir: Path, short_name: str):
       }
     }
   }
-
-  # Return model metadata
-  return model_metadata
 
 
 def create_metadata_json(models: list, output_dir: Path, custom_name=None, short_name=None, is_20hz=False, upstream_branch="unknown"):
@@ -184,14 +184,28 @@ if __name__ == "__main__":
 
   _output_dir = Path(args.output_dir)
   _output_dir.mkdir(exist_ok=True, parents=True)
+  _short_name = create_short_name(args.custom_name) if args.custom_name else None
+
+  _driving_pkl = _find_driving_pkl(_output_dir)
+  if not _driving_pkl:
+    print(f"No driving_tinygrad.pkl found in {_output_dir}", file=sys.stderr)
+    sys.exit(1)
+
+  if _short_name:
+    new_pkl = _output_dir / f"driving_{_short_name.lower()}_tinygrad.pkl"
+    if not new_pkl.exists():
+      _driving_pkl = _driving_pkl.rename(new_pkl)
+    else:
+      _driving_pkl = new_pkl
+
   _models = []
 
   for _model_path in model_paths:
-    _model_metadata = generate_metadata(Path(_model_path), _output_dir, create_short_name(args.custom_name))
+    _model_metadata = generate_metadata(Path(_model_path), _output_dir, _short_name, _driving_pkl)
     if _model_metadata:
       _models.append(_model_metadata)
 
   if _models:
-    create_metadata_json(_models, _output_dir, args.custom_name, create_short_name(args.custom_name), args.is_20hz, args.upstream_branch)
+    create_metadata_json(_models, _output_dir, args.custom_name, _short_name, args.is_20hz, args.upstream_branch)
   else:
     print("No models processed.", file=sys.stderr)

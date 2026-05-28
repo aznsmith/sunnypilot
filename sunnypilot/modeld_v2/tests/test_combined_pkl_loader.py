@@ -3,7 +3,7 @@ import pytest
 
 import openpilot.sunnypilot.models.helpers as helpers
 import openpilot.sunnypilot.modeld_v2.modeld as modeld_module
-from openpilot.sunnypilot.modeld_v2.modeld import _find_combined_pkl
+from openpilot.sunnypilot.modeld_v2.modeld import _find_driving_pkl
 from openpilot.sunnypilot.modeld_v2.tests.conftest import DummyModel, DummyBundle, ARCHETYPES, CAM_W, CAM_H, \
   SPLIT_VISION_INPUT_SHAPES, SPLIT_POLICY_INPUT_SHAPES
 
@@ -12,61 +12,53 @@ ModelState = modeld_module.ModelState
 
 # Pkl discovery
 
-class TestFindCombinedPkl:
+class TestFindDrivingPkl:
   def test_returns_none_when_no_bundle(self):
-    assert _find_combined_pkl(None) is None
+    assert _find_driving_pkl(None) is None
 
   def test_returns_none_when_no_models(self):
     bundle = DummyBundle(models=[])
-    assert _find_combined_pkl(bundle) is None
+    assert _find_driving_pkl(bundle) is None
 
-  def test_returns_none_when_combined_not_on_disk(self):
+  def test_returns_none_when_pkl_not_on_disk(self):
     bundle = DummyBundle(models=[
-      DummyModel('vision', 'driving_vision_fof_tinygrad.pkl'),
-      DummyModel('policy', 'driving_policy_fof_tinygrad.pkl'),
+      DummyModel('vision', 'driving_fof_tinygrad.pkl'),
+      DummyModel('policy', 'driving_fof_tinygrad.pkl'),
     ])
-    assert _find_combined_pkl(bundle) is None
+    assert _find_driving_pkl(bundle) is None
 
-  def test_finds_combined_for_split_model(self, tmp_path, monkeypatch):
-    (tmp_path / 'driving_combined_fof_tinygrad.pkl').write_bytes(b'fake')
+  def test_finds_pkl_by_artifact_name(self, tmp_path, monkeypatch):
+    (tmp_path / 'driving_fof_tinygrad.pkl').write_bytes(b'fake')
     from openpilot.system.hardware import hw
     monkeypatch.setattr(hw.Paths, 'model_root', staticmethod(lambda: str(tmp_path)))
 
     bundle = DummyBundle(models=[
-      DummyModel('vision', 'driving_vision_fof_tinygrad.pkl'),
-      DummyModel('policy', 'driving_policy_fof_tinygrad.pkl'),
+      DummyModel('vision', 'driving_fof_tinygrad.pkl'),
+      DummyModel('policy', 'driving_fof_tinygrad.pkl'),
     ])
-    result = _find_combined_pkl(bundle)
+    result = _find_driving_pkl(bundle)
     assert result is not None
-    assert 'driving_combined_fof' in result
+    assert 'driving_fof_tinygrad.pkl' in result
 
-  def test_finds_combined_for_supercombo(self, tmp_path, monkeypatch):
-    (tmp_path / 'driving_combined_lav2_tinygrad.pkl').write_bytes(b'fake')
+  def test_finds_fallback_driving_tinygrad(self, tmp_path, monkeypatch):
+    (tmp_path / 'driving_tinygrad.pkl').write_bytes(b'fake')
     from openpilot.system.hardware import hw
     monkeypatch.setattr(hw.Paths, 'model_root', staticmethod(lambda: str(tmp_path)))
 
-    bundle = DummyBundle(models=[DummyModel('supercombo', 'supercombo_lav2_tinygrad.pkl')])
-    result = _find_combined_pkl(bundle)
+    bundle = DummyBundle(models=[DummyModel('vision', 'nonexistent.pkl')])
+    result = _find_driving_pkl(bundle)
     assert result is not None
-    assert 'driving_combined_lav2' in result
-
-  def test_naming_convention_split(self):
-    assert 'driving_vision_cd210_tinygrad.pkl'.replace('driving_vision_',
-                                                       'driving_combined_') == 'driving_combined_cd210_tinygrad.pkl'
-
-  def test_naming_convention_supercombo(self):
-    assert 'supercombo_wd40_tinygrad.pkl'.replace('supercombo_',
-                                                  'driving_combined_') == 'driving_combined_wd40_tinygrad.pkl'
+    assert 'driving_tinygrad.pkl' in result
 
 
 # Init — assertion guard
 
 class TestModelStateCombinedInit:
-  def test_asserts_when_no_combined_pkl(self, monkeypatch):
+  def test_asserts_when_no_pkl(self, monkeypatch):
     bundle = DummyBundle(models=[], is_20hz=True)
     monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None: bundle, raising=False)
     monkeypatch.setattr(modeld_module, 'get_active_bundle', lambda params=None: bundle, raising=False)
-    with pytest.raises(AssertionError, match="No combined pkl found"):
+    with pytest.raises(AssertionError, match="No driving pkl found"):
       ModelState(cam_w=CAM_W, cam_h=CAM_H)
 
 

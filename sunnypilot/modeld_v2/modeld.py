@@ -37,29 +37,22 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 PROCESS_NAME = "selfdrive.modeld.modeld_tinygrad"
 
 
-def _find_combined_pkl(bundle):
+def _find_driving_pkl(bundle):
+  if (override := os.environ.get('COMBINED_MODEL_PKL')) and os.path.exists(override):
+    return override
   if bundle is None or not bundle.models:
     return None
   from openpilot.system.hardware.hw import Paths
   model_root = Paths.model_root()
 
-  candidates = []
-  vision_models = [m for m in bundle.models if m.type.raw in ('vision',)]
-  if vision_models:
-    vision_file = vision_models[0].artifact.file_name
-    candidates.append(vision_file.replace('driving_vision_', 'driving_combined_'))
-  else:
-    supercombo_models = [m for m in bundle.models if m.type.raw in ('supercombo',)]
-    if supercombo_models:
-      sc_file = supercombo_models[0].artifact.file_name
-      candidates.append(sc_file.replace('supercombo_', 'driving_combined_'))
+  pkl_name = bundle.models[0].artifact.file_name
+  pkl_path = os.path.join(model_root, pkl_name)
+  if os.path.exists(pkl_path):
+    return pkl_path
 
-  candidates.append('driving_combined_tinygrad.pkl')
-
-  for combined_file in candidates:
-    combined_path = os.path.join(model_root, combined_file)
-    if os.path.exists(combined_path):
-      return combined_path
+  fallback = os.path.join(model_root, 'driving_tinygrad.pkl')
+  if os.path.exists(fallback):
+    return fallback
   return None
 
 
@@ -80,18 +73,22 @@ class ModelState(ModelStateBase):
   def __init__(self, cam_w: int, cam_h: int):
     ModelStateBase.__init__(self)
 
-    model_bundle = get_active_bundle()
+    env_pkl = os.environ.get('COMBINED_MODEL_PKL')
+    if env_pkl and os.path.exists(env_pkl):
+      model_bundle = None
+    else:
+      model_bundle = get_active_bundle()
     self.generation = model_bundle.generation if model_bundle is not None else None
-    overrides = {override.key: override.value for override in model_bundle.overrides}
+    overrides = {override.key: override.value for override in model_bundle.overrides} if model_bundle else {}
 
     self.LAT_SMOOTH_SECONDS = float(overrides.get('lat', ".0"))
     self.LONG_SMOOTH_SECONDS = float(overrides.get('long', ".0"))
     self.MIN_LAT_CONTROL_SPEED = 0.3
     self.PLANPLUS_CONTROL: float = 1.0
 
-    combined_pkl_path = _find_combined_pkl(model_bundle)
-    assert combined_pkl_path is not None, "No combined pkl found — all models must be compiled with compile_modeld.py"
-    self._init_combined(combined_pkl_path, cam_w, cam_h, model_bundle)
+    pkl_path = _find_driving_pkl(model_bundle)
+    assert pkl_path is not None, "No driving pkl found — all models must be compiled with compile_modeld.py"
+    self._init_combined(pkl_path, cam_w, cam_h, model_bundle)
 
   def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
     from tinygrad.tensor import Tensor
@@ -110,6 +107,7 @@ class ModelState(ModelStateBase):
       model_metadata = metadata['model']
       self.vision_output_slices = model_metadata['output_slices']
       self.policy_output_slices = {}
+      self._policy_slices_list = []
       self._combined_model_type = 'supercombo'
       self._vision_input_names = [k for k in model_metadata['input_shapes'] if 'img' in k]
       from openpilot.sunnypilot.modeld_v2.compile_modeld import make_supercombo_input_queues
@@ -117,17 +115,19 @@ class ModelState(ModelStateBase):
       self.input_queues, self.npy = make_supercombo_input_queues(model_metadata['input_shapes'], frame_skip, device=self.DEV)
     else:
       vision_metadata = metadata['vision']
-      if 'policy' in metadata:
-        policy_metadata = metadata['policy']
+      policy_keys = [k for k in metadata if k != 'vision']
+      if policy_keys == ['policy']:
         self._combined_model_type = 'split'
       else:
-        first_policy_key = next(k for k in metadata if k not in ('vision',))
-        policy_metadata = metadata[first_policy_key]
         self._combined_model_type = 'multi_policy'
       self.vision_output_slices = vision_metadata['output_slices']
-      self.policy_output_slices = policy_metadata['output_slices']
+      self._policy_keys = policy_keys
+      self._policy_slices_list = [metadata[k]['output_slices'] for k in policy_keys]
+      self.policy_output_slices = self._policy_slices_list[0]
+      self._has_on_policy = any('on' in k.lower() for k in policy_keys)
+      first_policy_metadata = metadata[policy_keys[0]]
       vision_input_shapes = vision_metadata['input_shapes']
-      policy_input_shapes = policy_metadata['input_shapes']
+      policy_input_shapes = first_policy_metadata['input_shapes']
       self._vision_input_names = [k for k in vision_input_shapes if 'img' in k]
       frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
       self.input_queues, self.npy = make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device=self.DEV)
@@ -209,10 +209,24 @@ class ModelState(ModelStateBase):
       outputs = self.parser.parse_outputs(sliced)
     else:
       vision_output = raw_outputs[0].numpy().flatten()
-      policy_output = raw_outputs[1].numpy().flatten()
       vision_sliced = {k: vision_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
-      policy_sliced = {k: policy_output[np.newaxis, v] for k, v in self.policy_output_slices.items()}
-      outputs = {**self.parser.parse_vision_outputs(vision_sliced), **self.parser.parse_policy_outputs(policy_sliced)}
+      outputs = self.parser.parse_vision_outputs(vision_sliced)
+
+      for i, policy_slices in enumerate(self._policy_slices_list):
+        policy_output = raw_outputs[i + 1].numpy().flatten()
+        policy_sliced = {k: policy_output[np.newaxis, v] for k, v in policy_slices.items()}
+        parsed = self.parser.parse_policy_outputs(policy_sliced)
+        if 'off' in self._policy_keys[i] and self._has_on_policy:
+          parsed.pop('plan', None)
+        outputs.update(parsed)
+
+      if 'planplus' in outputs and 'plan' in outputs:
+        outputs['plan'] = outputs['plan'] + outputs['planplus']
+
+    if 'desired_curvature' in outputs and 'prev_desired_curv' in self.npy:
+      buf = self.npy['prev_desired_curv']
+      buf[0, :-1] = buf[0, 1:]
+      buf[0, -1, :] = outputs['desired_curvature'][0, :] if not self.mlsim else 0
 
     return outputs
 
@@ -381,7 +395,8 @@ def main(demo=False):
       'traffic_convention': traffic_convention,
     }
 
-    inputs['lateral_control_params'] = np.array([v_ego, lat_delay], dtype=np.float32)
+    if 'lateral_control_params' in model.npy:
+      inputs['lateral_control_params'] = np.array([v_ego, lat_delay], dtype=np.float32)
 
     mt1 = time.perf_counter()
     model_output = model.run(bufs, transforms, inputs, prepare_only)
