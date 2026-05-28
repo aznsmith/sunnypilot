@@ -12,17 +12,134 @@ from tinygrad.device import Device
 from tinygrad.engine.jit import TinyJit
 
 from openpilot.selfdrive.modeld.compile_modeld import (
-  NV12Frame, make_frame_prepare, make_input_queues,
-  shift_and_sample, sample_skip, sample_desire, compile_modeld as compile_vision_policy,
+  NV12Frame, make_frame_prepare,
+  shift_and_sample, sample_skip, sample_desire,
 )
 
 MODEL_TYPES = ('vision_policy', 'supercombo', 'vision_multi_policy')
 
 
-def normalize_policy_input_shapes(policy_input_shapes):
-  if 'desire_pulse' not in policy_input_shapes and 'desire' in policy_input_shapes:
-    policy_input_shapes = {('desire_pulse' if k == 'desire' else k): v for k, v in policy_input_shapes.items()}
-  return policy_input_shapes
+def _detect_desire_key(policy_input_shapes):
+  for k in policy_input_shapes:
+    if k.startswith('desire'):
+      return k
+  return None
+
+
+def make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device):
+  img = vision_input_shapes['img']
+  n_frames = img[1] // 6
+  img_buf_shape = (frame_skip * (n_frames - 1) + 1, 6, img[2], img[3])
+
+  fb = policy_input_shapes['features_buffer']
+  desire_key = _detect_desire_key(policy_input_shapes)
+  dp = policy_input_shapes[desire_key]
+  tc = policy_input_shapes['traffic_convention']
+
+  npy = {
+    'desire': np.zeros(dp[2], dtype=np.float32),
+    'traffic_convention': np.zeros(tc, dtype=np.float32),
+    'tfm': np.zeros((3, 3), dtype=np.float32),
+    'big_tfm': np.zeros((3, 3), dtype=np.float32),
+  }
+  input_queues = {
+    'img_q': Tensor(np.zeros(img_buf_shape, dtype=np.uint8), device=device).contiguous().realize(),
+    'big_img_q': Tensor(np.zeros(img_buf_shape, dtype=np.uint8), device=device).contiguous().realize(),
+    'feat_q': Tensor(np.zeros((frame_skip * (fb[1] - 1) + 1, fb[0], fb[2]), dtype=np.float32), device=device).contiguous().realize(),
+    'desire_q': Tensor(np.zeros((frame_skip * dp[1], dp[0], dp[2]), dtype=np.float32), device=device).contiguous().realize(),
+    **{k: Tensor(v, device='NPY').realize() for k, v in npy.items()},
+  }
+  return input_queues, npy
+
+
+def make_run_split_policy(vision_runner, policy_runner, nv12: NV12Frame, model_w, model_h,
+                          vision_features_slice, frame_skip, desire_key, prepare_only=False):
+  frame_prepare = make_frame_prepare(nv12, model_w, model_h)
+  sample_skip_fn = partial(sample_skip, frame_skip=frame_skip)
+  sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
+
+  def run_policy(img_q, big_img_q, feat_q, desire_q, desire, traffic_convention, tfm, big_tfm, frame, big_frame):
+    tfm = tfm.to(Device.DEFAULT)
+    big_tfm = big_tfm.to(Device.DEFAULT)
+    desire = desire.to(Device.DEFAULT)
+    traffic_convention = traffic_convention.to(Device.DEFAULT)
+    Tensor.realize(tfm, big_tfm, desire, traffic_convention)
+
+    img = shift_and_sample(img_q, frame_prepare(frame, tfm).unsqueeze(0), sample_skip_fn)
+    big_img = shift_and_sample(big_img_q, frame_prepare(big_frame, big_tfm).unsqueeze(0), sample_skip_fn)
+
+    if prepare_only:
+      return img, big_img
+
+    vision_out = next(iter(vision_runner({'img': img, 'big_img': big_img}).values())).cast('float32')
+
+    new_feat = vision_out[:, vision_features_slice].reshape(1, -1).unsqueeze(0)
+    feat_buf = shift_and_sample(feat_q, new_feat, sample_skip_fn)
+    desire_buf = shift_and_sample(desire_q, desire.reshape(1, 1, -1), sample_desire_fn)
+
+    inputs = {'features_buffer': feat_buf, desire_key: desire_buf, 'traffic_convention': traffic_convention}
+    policy_out = next(iter(policy_runner(inputs).values())).cast('float32')
+
+    return vision_out, policy_out
+  return run_policy
+
+
+def compile_split_policy(nv12: NV12Frame, model_w, model_h, prepare_only, frame_skip,
+                         vision_runner, policy_runner, vision_metadata, policy_metadata):
+  print(f"Compiling combined policy JIT for {nv12.width}x{nv12.height} (prepare_only={prepare_only})...")
+
+  vision_features_slice = vision_metadata['output_slices']['hidden_state']
+  vision_input_shapes = vision_metadata['input_shapes']
+  policy_input_shapes = policy_metadata['input_shapes']
+  desire_key = _detect_desire_key(policy_input_shapes)
+
+  _run = make_run_split_policy(vision_runner, policy_runner, nv12, model_w, model_h,
+                               vision_features_slice, frame_skip, desire_key, prepare_only)
+  run_policy_jit = TinyJit(_run, prune=True)
+
+  SEED = 42
+
+  def random_inputs_run_fn(fn, seed, test_val=None, test_buffers=None, expect_match=True):
+    input_queues, npy = make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, Device.DEFAULT)
+    np.random.seed(seed)
+    Tensor.manual_seed(seed)
+
+    testing = test_val is not None or test_buffers is not None
+    n_runs = 1 if testing else 3
+
+    for i in range(n_runs):
+      frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8').realize()
+      big_frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8').realize()
+      for v in npy.values():
+        v[:] = np.random.randn(*v.shape).astype(v.dtype)
+      Device.default.synchronize()
+      st = time.perf_counter()
+      outs = fn(**input_queues, frame=frame, big_frame=big_frame)
+      mt = time.perf_counter()
+      Device.default.synchronize()
+      et = time.perf_counter()
+      print(f"  [{i+1}/{n_runs}] enqueue {(mt-st)*1e3:6.2f} ms -- total {(et-st)*1e3:6.2f} ms")
+
+      if i == 0:
+        val = [np.copy(v.numpy()) for v in outs]
+        buffers = [np.copy(v.numpy().copy()) for v in input_queues.values()]
+
+    if test_val is not None:
+      match = all(np.array_equal(a, b) for a, b in zip(val, test_val, strict=True))
+      assert match == expect_match, f"outputs {'differ from' if expect_match else 'match'} baseline (seed={seed})"
+    if test_buffers is not None:
+      match = all(np.array_equal(a, b) for a, b in zip(buffers, test_buffers, strict=True))
+      assert match == expect_match, f"buffers {'differ from' if expect_match else 'match'} baseline (seed={seed})"
+    return fn, val, buffers
+
+  print('capture + replay')
+  run_policy_jit, test_val, test_buffers = random_inputs_run_fn(run_policy_jit, SEED)
+
+  print('pickle round trip')
+  run_policy_jit = pickle.loads(pickle.dumps(run_policy_jit))
+  random_inputs_run_fn(run_policy_jit, SEED, test_val, test_buffers, expect_match=True)
+  random_inputs_run_fn(run_policy_jit, SEED+1, test_val, test_buffers, expect_match=False)
+  return run_policy_jit
 
 
 def derive_frame_skip(vision_input_shapes, policy_input_shapes):
@@ -134,7 +251,7 @@ def make_run_supercombo(model_runner, nv12: NV12Frame, model_w, model_h,
 
 
 def make_run_vision_multi_policy(vision_runner, policy_runners, nv12: NV12Frame, model_w, model_h,
-                                 vision_features_slice, frame_skip, prepare_only=False):
+                                 vision_features_slice, frame_skip, desire_key, prepare_only=False):
   frame_prepare = make_frame_prepare(nv12, model_w, model_h)
   sample_skip_fn = partial(sample_skip, frame_skip=frame_skip)
   sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
@@ -159,7 +276,7 @@ def make_run_vision_multi_policy(vision_runner, policy_runners, nv12: NV12Frame,
     feat_buf = shift_and_sample(feat_q, new_feat, sample_skip_fn)
     desire_buf = shift_and_sample(desire_q, desire.reshape(1, 1, -1), sample_desire_fn)
 
-    inputs = {'features_buffer': feat_buf, 'desire_pulse': desire_buf, 'traffic_convention': traffic_convention}
+    inputs = {'features_buffer': feat_buf, desire_key: desire_buf, 'traffic_convention': traffic_convention}
 
     policy_outputs = []
     for runner in policy_runners:
@@ -212,12 +329,13 @@ def compile_multi_policy(nv12: NV12Frame, model_w, model_h, prepare_only, frame_
   vision_features_slice = vision_metadata['output_slices']['hidden_state']
   vision_input_shapes = vision_metadata['input_shapes']
   policy_input_shapes = policy_metadata['input_shapes']
+  desire_key = _detect_desire_key(policy_input_shapes)
 
   _run = make_run_vision_multi_policy(vision_runner, policy_runners, nv12, model_w, model_h,
-                                      vision_features_slice, frame_skip, prepare_only)
+                                      vision_features_slice, frame_skip, desire_key, prepare_only)
   run_jit = TinyJit(_run, prune=True)
 
-  input_queues, npy = make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, Device.DEFAULT)
+  input_queues, npy = make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, Device.DEFAULT)
 
   run_jit = _warmup_and_serialize(run_jit, input_queues, npy, nv12)
   return run_jit
@@ -255,7 +373,6 @@ if __name__ == "__main__":
     policy_runner = OnnxRunner(args.policy_onnx)
     out['metadata']['vision'] = make_metadata_dict(args.vision_onnx)
     out['metadata']['policy'] = make_metadata_dict(args.policy_onnx)
-    out['metadata']['policy']['input_shapes'] = normalize_policy_input_shapes(out['metadata']['policy']['input_shapes'])
 
     frame_skip = args.frame_skip if args.frame_skip is not None else derive_frame_skip(out['metadata']['vision']['input_shapes'],
                                                                                        out['metadata']['policy']['input_shapes'])
@@ -264,9 +381,9 @@ if __name__ == "__main__":
       nv12 = NV12Frame(cam_w, cam_h, *get_nv12_info(cam_w, cam_h))
       model_w, model_h = args.model_size
       out[(cam_w, cam_h)] = {
-        name: compile_vision_policy(nv12, model_w, model_h, prepare_only, frame_skip,
-                                    vision_runner, policy_runner,
-                                    out['metadata']['vision'], out['metadata']['policy'])
+        name: compile_split_policy(nv12, model_w, model_h, prepare_only, frame_skip,
+                                   vision_runner, policy_runner,
+                                   out['metadata']['vision'], out['metadata']['policy'])
         for name, prepare_only in [('warp_enqueue', True), ('run_policy', False)]
       }
 
@@ -304,7 +421,6 @@ if __name__ == "__main__":
       runner = OnnxRunner(onnx_path)
       policy_runners.append(runner)
       out['metadata'][name] = make_metadata_dict(onnx_path)
-      out['metadata'][name]['input_shapes'] = normalize_policy_input_shapes(out['metadata'][name]['input_shapes'])
 
     first_policy_key = policy_onnxes[0][0]
     frame_skip = args.frame_skip if args.frame_skip is not None else derive_frame_skip(out['metadata']['vision']['input_shapes'],

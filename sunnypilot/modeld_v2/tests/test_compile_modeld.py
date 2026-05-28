@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, normalize_policy_input_shapes
+from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, _detect_desire_key
 
 
 class TestDeriveFrameSkip:
@@ -145,25 +145,18 @@ class TestTemporalIdxEquivalence:
       f"{mode}: compile desire samples {compile_sampled_count} != model input {total_desire_history}"
 
 
-class TestNormalizePolicyInputShapes:
-  def test_renames_desire_to_desire_pulse(self):
-    shapes = {'features_buffer': (1, 25, 512), 'desire': (1, 25, 8), 'traffic_convention': (1, 2)}
-    result = normalize_policy_input_shapes(shapes)
-    assert 'desire_pulse' in result
-    assert 'desire' not in result
-    assert result['desire_pulse'] == (1, 25, 8)
-    assert result['features_buffer'] == (1, 25, 512)
+class TestDetectDesireKey:
+  def test_finds_desire(self):
+    shapes = {'features_buffer': (1, 99, 512), 'desire': (1, 100, 8), 'traffic_convention': (1, 2)}
+    assert _detect_desire_key(shapes) == 'desire'
 
-  def test_preserves_desire_pulse_if_present(self):
+  def test_finds_desire_pulse(self):
     shapes = {'features_buffer': (1, 25, 512), 'desire_pulse': (1, 25, 8), 'traffic_convention': (1, 2)}
-    result = normalize_policy_input_shapes(shapes)
-    assert result is shapes
+    assert _detect_desire_key(shapes) == 'desire_pulse'
 
-  def test_noop_when_no_desire_key(self):
+  def test_returns_none_when_no_desire(self):
     shapes = {'features_buffer': (1, 99, 512), 'traffic_convention': (1, 2)}
-    result = normalize_policy_input_shapes(shapes)
-    assert 'desire_pulse' not in result
-    assert 'desire' not in result
+    assert _detect_desire_key(shapes) is None
 
 
 class TestOutputSlicePreservation:

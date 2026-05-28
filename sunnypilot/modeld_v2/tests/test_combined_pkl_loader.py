@@ -87,6 +87,18 @@ class TestStockEquivalence:
     assert set(state.npy.keys()) == set(stock_npy.keys()), \
       f"Npy keys differ: v2={set(state.npy.keys())}, stock={set(stock_npy.keys())}"
 
+  def test_split_queue_keys_work_with_desire_key(self, model_state_factory):
+    from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, make_split_input_queues
+
+    policy_shapes_desire = {'features_buffer': (1, 25, 512), 'desire': (1, 25, 8), 'traffic_convention': (1, 2)}
+    frame_skip = derive_frame_skip(SPLIT_VISION_INPUT_SHAPES, policy_shapes_desire)
+    queues, npy = make_split_input_queues(SPLIT_VISION_INPUT_SHAPES, policy_shapes_desire, frame_skip, device='NPY')
+
+    assert 'desire_q' in queues
+    assert 'desire' in npy
+    assert 'img_q' in queues
+    assert 'feat_q' in queues
+
   def test_split_vision_input_names_match_stock(self, model_state_factory):
     state = model_state_factory(ARCHETYPES['vision_policy_split'])
     assert state.vision_input_names == ['img', 'big_img']

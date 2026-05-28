@@ -96,8 +96,7 @@ class ModelState(ModelStateBase):
   def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
     from tinygrad.tensor import Tensor
     from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
-    from openpilot.selfdrive.modeld.compile_modeld import make_input_queues
-    from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, normalize_policy_input_shapes
+    from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, make_split_input_queues
     from tinygrad.device import Device
 
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
@@ -128,10 +127,10 @@ class ModelState(ModelStateBase):
       self.vision_output_slices = vision_metadata['output_slices']
       self.policy_output_slices = policy_metadata['output_slices']
       vision_input_shapes = vision_metadata['input_shapes']
-      policy_input_shapes = normalize_policy_input_shapes(policy_metadata['input_shapes'])
+      policy_input_shapes = policy_metadata['input_shapes']
       self._vision_input_names = [k for k in vision_input_shapes if 'img' in k]
       frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
-      self.input_queues, self.npy = make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device=self.DEV)
+      self.input_queues, self.npy = make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device=self.DEV)
 
     from openpilot.sunnypilot.modeld_v2.parse_model_outputs_split import Parser as SplitParser
     from openpilot.sunnypilot.modeld_v2.parse_model_outputs import Parser as CombinedParser
