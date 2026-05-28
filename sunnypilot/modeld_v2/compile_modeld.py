@@ -42,6 +42,13 @@ def make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip
     'tfm': np.zeros((3, 3), dtype=np.float32),
     'big_tfm': np.zeros((3, 3), dtype=np.float32),
   }
+
+  handled = {'features_buffer', desire_key, 'traffic_convention'}
+  for key, shape in policy_input_shapes.items():
+    if key in handled:
+      continue
+    npy[key] = np.zeros(shape, dtype=np.float32)
+
   input_queues = {
     'img_q': Tensor(np.zeros(img_buf_shape, dtype=np.uint8), device=device).contiguous().realize(),
     'big_img_q': Tensor(np.zeros(img_buf_shape, dtype=np.uint8), device=device).contiguous().realize(),
@@ -53,17 +60,18 @@ def make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip
 
 
 def make_run_split_policy(vision_runner, policy_runner, nv12: NV12Frame, model_w, model_h,
-                          vision_features_slice, frame_skip, desire_key, prepare_only=False):
+                          vision_features_slice, frame_skip, desire_key, extra_policy_keys,
+                          prepare_only=False):
   frame_prepare = make_frame_prepare(nv12, model_w, model_h)
   sample_skip_fn = partial(sample_skip, frame_skip=frame_skip)
   sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
 
-  def run_policy(img_q, big_img_q, feat_q, desire_q, desire, traffic_convention, tfm, big_tfm, frame, big_frame):
-    tfm = tfm.to(Device.DEFAULT)
-    big_tfm = big_tfm.to(Device.DEFAULT)
-    desire = desire.to(Device.DEFAULT)
-    traffic_convention = traffic_convention.to(Device.DEFAULT)
-    Tensor.realize(tfm, big_tfm, desire, traffic_convention)
+  def run_policy(img_q, big_img_q, feat_q, desire_q, desire, traffic_convention, tfm, big_tfm, frame, big_frame, **extra):
+    npy_tensors = [tfm.to(Device.DEFAULT), big_tfm.to(Device.DEFAULT),
+                   desire.to(Device.DEFAULT), traffic_convention.to(Device.DEFAULT)]
+    extra_device = {k: extra[k].to(Device.DEFAULT) for k in extra_policy_keys}
+    Tensor.realize(*npy_tensors, *extra_device.values())
+    tfm, big_tfm, desire, traffic_convention = npy_tensors
 
     img = shift_and_sample(img_q, frame_prepare(frame, tfm).unsqueeze(0), sample_skip_fn)
     big_img = shift_and_sample(big_img_q, frame_prepare(big_frame, big_tfm).unsqueeze(0), sample_skip_fn)
@@ -77,7 +85,7 @@ def make_run_split_policy(vision_runner, policy_runner, nv12: NV12Frame, model_w
     feat_buf = shift_and_sample(feat_q, new_feat, sample_skip_fn)
     desire_buf = shift_and_sample(desire_q, desire.reshape(1, 1, -1), sample_desire_fn)
 
-    inputs = {'features_buffer': feat_buf, desire_key: desire_buf, 'traffic_convention': traffic_convention}
+    inputs = {'features_buffer': feat_buf, desire_key: desire_buf, 'traffic_convention': traffic_convention, **extra_device}
     policy_out = next(iter(policy_runner(inputs).values())).cast('float32')
 
     return vision_out, policy_out
@@ -92,9 +100,10 @@ def compile_split_policy(nv12: NV12Frame, model_w, model_h, prepare_only, frame_
   vision_input_shapes = vision_metadata['input_shapes']
   policy_input_shapes = policy_metadata['input_shapes']
   desire_key = _detect_desire_key(policy_input_shapes)
+  extra_policy_keys = [k for k in policy_input_shapes if k not in ('features_buffer', desire_key, 'traffic_convention')]
 
   _run = make_run_split_policy(vision_runner, policy_runner, nv12, model_w, model_h,
-                               vision_features_slice, frame_skip, desire_key, prepare_only)
+                               vision_features_slice, frame_skip, desire_key, extra_policy_keys, prepare_only)
   run_policy_jit = TinyJit(_run, prune=True)
 
   SEED = 42
@@ -251,18 +260,19 @@ def make_run_supercombo(model_runner, nv12: NV12Frame, model_w, model_h,
 
 
 def make_run_vision_multi_policy(vision_runner, policy_runners, nv12: NV12Frame, model_w, model_h,
-                                 vision_features_slice, frame_skip, desire_key, prepare_only=False):
+                                 vision_features_slice, frame_skip, desire_key, extra_policy_keys,
+                                 prepare_only=False):
   frame_prepare = make_frame_prepare(nv12, model_w, model_h)
   sample_skip_fn = partial(sample_skip, frame_skip=frame_skip)
   sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
 
   def run_multi_policy(img_q, big_img_q, feat_q, desire_q, desire,
-                       traffic_convention, tfm, big_tfm, frame, big_frame):
-    tfm = tfm.to(Device.DEFAULT)
-    big_tfm = big_tfm.to(Device.DEFAULT)
-    desire = desire.to(Device.DEFAULT)
-    traffic_convention = traffic_convention.to(Device.DEFAULT)
-    Tensor.realize(tfm, big_tfm, desire, traffic_convention)
+                       traffic_convention, tfm, big_tfm, frame, big_frame, **extra):
+    npy_tensors = [tfm.to(Device.DEFAULT), big_tfm.to(Device.DEFAULT),
+                   desire.to(Device.DEFAULT), traffic_convention.to(Device.DEFAULT)]
+    extra_device = {k: extra[k].to(Device.DEFAULT) for k in extra_policy_keys}
+    Tensor.realize(*npy_tensors, *extra_device.values())
+    tfm, big_tfm, desire, traffic_convention = npy_tensors
 
     img = shift_and_sample(img_q, frame_prepare(frame, tfm).unsqueeze(0), sample_skip_fn)
     big_img = shift_and_sample(big_img_q, frame_prepare(big_frame, big_tfm).unsqueeze(0), sample_skip_fn)
@@ -276,7 +286,7 @@ def make_run_vision_multi_policy(vision_runner, policy_runners, nv12: NV12Frame,
     feat_buf = shift_and_sample(feat_q, new_feat, sample_skip_fn)
     desire_buf = shift_and_sample(desire_q, desire.reshape(1, 1, -1), sample_desire_fn)
 
-    inputs = {'features_buffer': feat_buf, desire_key: desire_buf, 'traffic_convention': traffic_convention}
+    inputs = {'features_buffer': feat_buf, desire_key: desire_buf, 'traffic_convention': traffic_convention, **extra_device}
 
     policy_outputs = []
     for runner in policy_runners:
@@ -330,9 +340,10 @@ def compile_multi_policy(nv12: NV12Frame, model_w, model_h, prepare_only, frame_
   vision_input_shapes = vision_metadata['input_shapes']
   policy_input_shapes = policy_metadata['input_shapes']
   desire_key = _detect_desire_key(policy_input_shapes)
+  extra_policy_keys = [k for k in policy_input_shapes if k not in ('features_buffer', desire_key, 'traffic_convention')]
 
   _run = make_run_vision_multi_policy(vision_runner, policy_runners, nv12, model_w, model_h,
-                                      vision_features_slice, frame_skip, desire_key, prepare_only)
+                                      vision_features_slice, frame_skip, desire_key, extra_policy_keys, prepare_only)
   run_jit = TinyJit(_run, prune=True)
 
   input_queues, npy = make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, Device.DEFAULT)

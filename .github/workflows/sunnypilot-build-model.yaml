@@ -169,7 +169,7 @@ jobs:
           COMPILE_MODELD="${{ github.workspace }}/sunnypilot/modeld_v2/compile_modeld.py"
           MODEL_SIZE=$(python3 -c "from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE as s; print(f'{s[0]}x{s[1]}')")
           CAMERA_RES=$(python3 -c "from openpilot.common.transformations.camera import _ar_ox_fisheye as a, _os_fisheye as o; print(f'{a.width}x{a.height} {o.width}x{o.height}')")
-          TG_FLAGS="DEV=QCOM FLOAT16=1 NOLOCALS=1 JIT_BATCH_SIZE=0"
+          TG_FLAGS="DEV=QCOM IMAGE=1 FLOAT16=1 NOLOCALS=1 JIT_BATCH_SIZE=0 OPENPILOT_HACKS=1"
 
           # Generate metadata for all ONNX files
           find "${{ env.MODELS_DIR }}" -maxdepth 1 -name '*.onnx' | while IFS= read -r onnx_file; do
