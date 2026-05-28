@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
+
+This file is part of sunnypilot and is licensed under the MIT License.
+See the LICENSE.md file in the root directory for more details.
+"""
+
 import argparse
 import os
 import pickle
@@ -307,7 +314,7 @@ def _warmup_and_serialize(run_jit, input_queues, npy, nv12):
       v[:] = np.random.randn(*v.shape).astype(v.dtype)
     Device.default.synchronize()
     st = time.perf_counter()
-    outs = run_jit(**input_queues, frame=frame, big_frame=big_frame)
+    run_jit(**input_queues, frame=frame, big_frame=big_frame)
     mt = time.perf_counter()
     Device.default.synchronize()
     et = time.perf_counter()

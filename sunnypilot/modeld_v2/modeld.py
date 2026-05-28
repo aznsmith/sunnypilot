@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
+
+This file is part of sunnypilot and is licensed under the MIT License.
+See the LICENSE.md file in the root directory for more details.
+"""
+
 import os
 from openpilot.system.hardware import TICI
 os.environ['DEV'] = 'QCOM' if TICI else 'CPU'
@@ -148,7 +155,7 @@ class ModelState(ModelStateBase):
     self.full_frames: dict = {}
     self._blob_cache: dict = {}
     nv12_info = get_nv12_info(cam_w, cam_h)
-    self.frame_buf_params = {k: nv12_info for k in self._vision_input_names}
+    self.frame_buf_params = dict.fromkeys(self._vision_input_names, nv12_info)
 
     self._run_policy = jits[(cam_w, cam_h)]['run_policy']
     self._warp_enqueue = jits[(cam_w, cam_h)]['warp_enqueue']

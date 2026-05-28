@@ -1,3 +1,10 @@
+"""
+Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
+
+This file is part of sunnypilot and is licensed under the MIT License.
+See the LICENSE.md file in the root directory for more details.
+"""
+
 import numpy as np
 import pytest
 
@@ -108,12 +115,6 @@ class TestTemporalIdxEquivalence:
       skip = buf_len // history
       modelstate_idxs = np.arange(buf_len)[-1 - (skip * (history - 1))::skip]
 
-    compile_buf_len = frame_skip * (history - 1) + 1 if mode != 'non20hz' else history
-    if mode != 'non20hz':
-      compile_sampled_len = compile_buf_len // frame_skip + (1 if compile_buf_len % frame_skip else 0)
-    else:
-      compile_sampled_len = compile_buf_len
-
     assert len(modelstate_idxs) == fb_shape[1], \
       f"{mode}: ModelState idx count {len(modelstate_idxs)} != input shape {fb_shape[1]}"
 
@@ -125,24 +126,10 @@ class TestTemporalIdxEquivalence:
   def test_desire_idx_equivalence(self, mode, desire_shape, fb_shape, frame_skip):
     history = desire_shape[1]
 
-    if mode == 'non20hz':
-      modelstate_buf_len = history
-      total_desire_history = history
-    elif mode == '20hz':
-      fb_history = fb_shape[1]
-      modelstate_buf_len = (fb_history + 1) * 4
-      total_desire_history = history
-    elif mode == 'split':
-      modelstate_buf_len = history * 4
-      total_desire_history = history
-
-    compile_desire_buf_len = frame_skip * history
-    if mode == 'non20hz':
-      compile_desire_buf_len = history
-
+    compile_desire_buf_len = frame_skip * history if mode != 'non20hz' else history
     compile_sampled_count = compile_desire_buf_len // frame_skip if frame_skip > 1 else compile_desire_buf_len
-    assert compile_sampled_count == total_desire_history, \
-      f"{mode}: compile desire samples {compile_sampled_count} != model input {total_desire_history}"
+    assert compile_sampled_count == history, \
+      f"{mode}: compile desire samples {compile_sampled_count} != model input {history}"
 
 
 class TestDetectDesireKey:
