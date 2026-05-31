@@ -222,34 +222,3 @@ class TestLeadSwitchSlew:
     out = _step(lp, FakeLead(status=True, d_rel=60.0, v_rel=-1.0, v_lead=24.0))
     assert out.leadOne.dRel == 60.0
     assert lp.slew_offset == 0.0
-
-
-class TestEarlyLeadInjection:
-  FAR = {'dRel': 60.0, 'yRel': 0.5, 'vRel': -3.0, 'vLead': 17.0}
-
-  def test_inject_when_no_lead(self):
-    lp = _make()
-    out = lp.smooth(FakeRadarState(lead_one=FakeLead(status=False)), far_lead=self.FAR)
-    assert out.leadOne.status is True
-    assert out.leadOne.dRel == 60.0
-    assert out.leadOne.vRel == -3.0
-    assert out.leadOne.modelProb == 0.5   # below FCW threshold
-
-  def test_inject_when_stock_lead_not_closing(self):
-    lp = _make()
-    raw = FakeRadarState(lead_one=FakeLead(status=True, d_rel=90.0, v_rel=0.0, v_lead=20.0))
-    out = lp.smooth(raw, far_lead=self.FAR)
-    assert out.leadOne.dRel == 60.0       # closer threat replaces a non-closing stock lead
-
-  def test_no_inject_when_stock_lead_closing(self):
-    lp = _make()
-    raw = FakeRadarState(lead_one=FakeLead(status=True, d_rel=40.0, v_rel=-2.0, v_lead=18.0, model_prob=0.9))
-    out = lp.smooth(raw, far_lead=self.FAR)
-    assert out.leadOne.dRel == 40.0       # real closing lead kept, not overridden
-    assert out.leadOne.vRel == -2.0
-
-  def test_no_far_lead_is_passthrough(self):
-    lp = _make()
-    raw = FakeRadarState(lead_one=FakeLead(status=True, d_rel=50.0, v_rel=-1.0, v_lead=18.0))
-    out = lp.smooth(raw, far_lead=None)
-    assert out.leadOne.dRel == 50.0

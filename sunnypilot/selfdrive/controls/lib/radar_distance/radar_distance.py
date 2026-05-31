@@ -59,11 +59,6 @@ _A_CEIL_EMERGENCY        = -1.0   # m/s^2 ceiling under emergency
 _A_CEIL_RATE_DOWN = 0.6
 _A_CEIL_RATE_UP = 0.8
 
-# early lead injection: surface a vetted raw closing track as leadOne so the MPC brakes early
-_INJECT_MIN_FRAMES = 8     # persistence before injecting
-_INJECT_VREL_MAX = -1.0    # only genuinely closing tracks
-_INJECT_EMA_TAU = 0.3      # s, smooth injected dRel/vRel
-
 _PARAM_REFRESH_FRAMES = max(1, int(1.0 / DT_MDL))
 
 
@@ -90,10 +85,6 @@ class RadarDistanceController:
 
     self._ceiling = _A_CEIL_RELEASED
     self._first = True
-
-    self._v_ego = 0.0
-    self._inj_drel: float | None = None  # EMA-smoothed injected lead
-    self._inj_vrel = 0.0
 
     self._lead_persistence = LeadPersistence()
 
@@ -130,7 +121,6 @@ class RadarDistanceController:
       v_ego = float(sm['carState'].vEgo)
     except Exception:
       v_ego = 0.0
-    self._v_ego = v_ego
 
     if radarstate is not None and radarstate.leadOne.status \
         and float(radarstate.leadOne.vRel) <= _VREL_DEADBAND \
@@ -145,22 +135,7 @@ class RadarDistanceController:
   def smooth_radarstate(self, radarstate):
     if not self._enabled:
       return radarstate
-    return self._lead_persistence.smooth(radarstate, force_enabled=True, far_lead=self._far_lead())
-
-  def _far_lead(self) -> dict | None:
-    # vetted raw closing track to inject as leadOne (EMA-smoothed); None if not confident
-    s = self._state
-    if not (s.active and s.frames_seen >= _INJECT_MIN_FRAMES and s.v_rel < _INJECT_VREL_MAX):
-      self._inj_drel = None
-      return None
-    if self._inj_drel is None:
-      self._inj_drel, self._inj_vrel = s.d_rel, s.v_rel
-    else:
-      a = DT_MDL / (_INJECT_EMA_TAU + DT_MDL)
-      self._inj_drel += a * (s.d_rel - self._inj_drel)
-      self._inj_vrel += a * (s.v_rel - self._inj_vrel)
-    return {'dRel': self._inj_drel, 'yRel': s.y_rel, 'vRel': self._inj_vrel,
-            'vLead': max(0.0, self._v_ego + self._inj_vrel)}
+    return self._lead_persistence.smooth(radarstate, force_enabled=True)
 
   def reset(self) -> None:
     self._state = FarLeadState()

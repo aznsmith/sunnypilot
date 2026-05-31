@@ -29,11 +29,6 @@ _SLEW_OFFSET_EPS = 0.5           # m, snap to zero below this
 _PHANTOM_MODELPROB_MAX = 0.5
 _PHANTOM_DREL_MAX = 5.0
 
-# Early-lead injection (RadarDistance surfaces a vetted raw closing track via far_lead).
-_INJECT_LEADONE_VREL = -0.5  # only inject if stock leadOne isn't already closing past this
-_INJECT_MODELPROB = 0.5      # MPC follows/brakes, but below the FCW (>0.9) threshold
-_INJECT_ATAU = 1.5           # lead-accel-tau default for the synthetic lead
-
 
 @dataclass
 class _LeadSnap:
@@ -214,7 +209,7 @@ class LeadPersistence:
             and float(lead.modelProb) < _PHANTOM_MODELPROB_MAX
             and float(lead.dRel) < _PHANTOM_DREL_MAX)
 
-  def smooth(self, radarstate, force_enabled: bool = True, far_lead: dict | None = None):
+  def smooth(self, radarstate, force_enabled: bool = True):
     if not force_enabled or radarstate is None:
       return radarstate
 
@@ -236,14 +231,6 @@ class LeadPersistence:
       l2 = _LeadProxyMasked()
     elif not radarstate.leadTwo.status and self._alive_two > 0 and self._last_two is not None:
       l2 = _LeadProxy(self._last_two)
-
-    # inject RadarDistance's early closing track as leadOne when none is closing (gap-fill)
-    if far_lead is not None:
-      eff = l1 if l1 is not None else radarstate.leadOne
-      if not bool(eff.status) or float(eff.vRel) > _INJECT_LEADONE_VREL:
-        l1 = _LeadProxy(_LeadSnap(
-          dRel=float(far_lead['dRel']), yRel=float(far_lead['yRel']), vRel=float(far_lead['vRel']),
-          vLead=float(far_lead['vLead']), aLeadK=0.0, aLeadTau=_INJECT_ATAU, modelProb=_INJECT_MODELPROB))
 
     if l1 is None and l2 is None:
       return radarstate
