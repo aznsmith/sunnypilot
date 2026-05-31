@@ -81,13 +81,16 @@ class LongitudinalPlannerSP:
     return None
 
   def get_mpc_accel_limits(self, v_ego: float, acc_mode: bool) -> tuple[float, float]:
-    # Hard MPC accel box (params[:,0]/[1]). ACC mode + controller on -> personality brake floor
-    # governs braking. Blended (not acc_mode) or controller off -> stock ACCEL_MIN/ACCEL_MAX.
+    # MPC accel box (params[:,0]/[1]). ACC mode + controller on -> personality brake floor governs
+    # braking. The personality floor is a near-binding soft constraint, so it MUST be lifted for
+    # emergencies: FCW or a stop command (matching the output_a_target setter bypass) and blended
+    # mode get full stock authority. Controller off -> stock ACCEL_MIN/ACCEL_MAX.
     if not self.accel_controller.is_enabled():
       return ACCEL_MIN, ACCEL_MAX
     accel_max = self.accel_controller.get_max_accel(v_ego)
-    accel_min = self.accel_controller.get_brake_floor(v_ego) if acc_mode else ACCEL_MIN
-    return accel_min, accel_max
+    if not acc_mode or self.fcw or self.output_should_stop:
+      return ACCEL_MIN, accel_max
+    return self.accel_controller.get_brake_floor(v_ego), accel_max
 
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
     CS = sm['carState']

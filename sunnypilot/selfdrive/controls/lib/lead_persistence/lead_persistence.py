@@ -205,9 +205,17 @@ class LeadPersistence:
 
   @staticmethod
   def _is_phantom(lead) -> bool:
-    return (bool(lead.status)
+    if not (bool(lead.status)
             and float(lead.modelProb) < _PHANTOM_MODELPROB_MAX
-            and float(lead.dRel) < _PHANTOM_DREL_MAX)
+            and float(lead.dRel) < _PHANTOM_DREL_MAX):
+      return False
+    # never mask an urgently-closing lead even at low modelProb: a real close cut-in can
+    # appear before the model confirms it. Mirrors the switch-slew urgent pass-through.
+    v_rel = float(lead.vRel)
+    if v_rel <= _SWITCH_PASSTHROUGH_VREL:
+      return False
+    ttc = float(lead.dRel) / max(0.1, -v_rel) if v_rel < 0.0 else float('inf')
+    return ttc > _SWITCH_TTC_MIN
 
   def smooth(self, radarstate, force_enabled: bool = True):
     if not force_enabled or radarstate is None:

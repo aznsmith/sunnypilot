@@ -154,6 +154,33 @@ def _step(lp, lead):
   return lp.smooth(raw)
 
 
+class TestPhantomMask:
+  def test_masked_when_not_urgent(self):
+    lp = _make()
+    # fresh, low modelProb, close, slow closing (TTC 8s) -> phantom ghost -> masked
+    raw = FakeRadarState(lead_one=FakeLead(status=True, d_rel=4.0, v_rel=-0.5, model_prob=0.3))
+    lp.update(raw)
+    out = lp.smooth(raw)
+    assert out.leadOne.status is False
+
+  def test_not_masked_when_urgent_ttc(self):
+    lp = _make()
+    # fresh, low modelProb, close, TTC 3s <= 4 -> real cut-in risk -> NOT masked
+    raw = FakeRadarState(lead_one=FakeLead(status=True, d_rel=3.0, v_rel=-1.0, model_prob=0.3))
+    lp.update(raw)
+    out = lp.smooth(raw)
+    assert out.leadOne.status is True
+    assert out.leadOne.dRel == 3.0
+
+  def test_not_masked_when_fast_closing(self):
+    lp = _make()
+    # fresh, low modelProb, close, vRel -10 <= -8 -> NOT masked
+    raw = FakeRadarState(lead_one=FakeLead(status=True, d_rel=4.0, v_rel=-10.0, model_prob=0.3))
+    lp.update(raw)
+    out = lp.smooth(raw)
+    assert out.leadOne.status is True
+
+
 class TestLeadSwitchSlew:
   def _settle_far(self, lp, d=45.0):
     out = None

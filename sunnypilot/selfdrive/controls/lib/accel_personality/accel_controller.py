@@ -153,10 +153,11 @@ class AccelPersonalityController:
   def _step_max(self, v_ego: float) -> float:
     t_max = self._target_max(v_ego)
     if self._first:
-      self._a_max = t_max
+      self._a_max = max(0.0, t_max)
       self._first = False
       return self._a_max
     rate = A_MAX_RATE_UP if t_max > self._a_max else A_MAX_RATE_DOWN
     step = rate * DT_MDL
-    self._a_max = float(np.clip(t_max, self._a_max - step, self._a_max + step))
+    # floor at 0: accel_max feeds the MPC box (params[:,1]); never let it invert below accel_min
+    self._a_max = max(0.0, float(np.clip(t_max, self._a_max - step, self._a_max + step)))
     return self._a_max
