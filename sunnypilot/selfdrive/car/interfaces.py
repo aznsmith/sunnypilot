@@ -144,7 +144,7 @@ def initialize_params(params) -> list[dict[str, Any]]:
   except Exception:
     try:
       _p = '/data/params/d/MazdaTorqueInterceptorEnabled'
-      result.append({'MazdaTorqueInterceptorEnabled': open(_p).read().strip() if os.path.exists(_p) else None})
+      result.append({'MazdaTorqueInterceptorEnabled': open(_p).read().strip() if os.path.exists(_p) else '0'})
     except Exception:
       result.append({'MazdaTorqueInterceptorEnabled': None})
 

@@ -14,7 +14,7 @@ class CarInterface(CarInterfaceBase):
   @staticmethod
   def _get_params(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:
     ret.brand = "mazda"
-    ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.mazda, MazdaFlags.GEN1)]
+    ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.mazda, int(MazdaFlags.GEN1))]
     ret.radarUnavailable = True
 
     ret.dashcamOnly = candidate not in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021)
