@@ -25,15 +25,16 @@ A_MAX_V = {
 }
 
 # ACC-mode braking authority (hard MPC accel-min). Per-speed brake ceiling per personality.
-# Gentler at low/mid speed (felt, short stops) and near-stock at highway (retain authority).
+# Iteration 1: GENTLE START. Soft at city/traffic speed (where gentleness is felt and short
+# stops keep it safe), firmer toward highway (retain authority where soft braking is dangerous).
 # Clamped to ACCEL_MIN so it never exceeds the stock/physical floor. Used ONLY in ACC mode;
-# blended and controller-off fall back to ACCEL_MIN (full authority). Defers harder-than-floor
-# braking to FCW/AEB.
+# blended and controller-off fall back to ACCEL_MIN (full authority). Harder-than-floor braking
+# defers to FCW + Toyota PCS/AEB. Tighten toward stock if firmer-lead stops feel late.
 A_BRAKE_FLOOR_BP = [2.0, 8.0, 16.0, 30.0, 40.0]  # m/s
 A_BRAKE_FLOOR_V = {
-  AccelPersonality.eco:    [-1.6, -2.1, -2.6, -3.0, -3.2],
-  AccelPersonality.normal: [-2.0, -2.6, -3.0, -3.3, -3.5],
-  AccelPersonality.sport:  [-2.4, -3.0, -3.4, -3.5, -3.5],
+  AccelPersonality.eco:    [-1.0, -1.3, -1.8, -2.4, -2.8],
+  AccelPersonality.normal: [-1.3, -1.7, -2.2, -2.8, -3.2],
+  AccelPersonality.sport:  [-1.7, -2.2, -2.8, -3.3, -3.5],
 }
 
 RAMP_OFF_RANGE = 5.0

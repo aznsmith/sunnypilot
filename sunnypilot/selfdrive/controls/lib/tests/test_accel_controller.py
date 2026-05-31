@@ -33,7 +33,7 @@ class TestBrakeFloor:
   def test_is_braking_authority(self):
     # a meaningful negative floor at speed (not the near-zero coast value)
     c = _make(AccelPersonality.normal)
-    assert c.get_brake_floor(16.0) <= -2.5
+    assert c.get_brake_floor(16.0) <= -1.5
 
   def test_sport_firmer_than_eco(self):
     eco = _make(AccelPersonality.eco)
