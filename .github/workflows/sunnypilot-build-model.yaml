@@ -230,6 +230,8 @@ jobs:
           rsync -avm \
             --include='*.dlc' \
             --include='*.pkl' \
+            --include='*.chunk*' \
+            --include='*.chunkmanifest' \
             --include='*.onnx' \
             --exclude='*' \
             --delete-excluded \

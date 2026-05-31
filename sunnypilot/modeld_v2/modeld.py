@@ -44,8 +44,13 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 PROCESS_NAME = "selfdrive.modeld.modeld_tinygrad"
 
 
+def _pkl_exists(path):
+  from openpilot.common.file_chunker import get_manifest_path
+  return os.path.exists(path) or os.path.exists(get_manifest_path(path))
+
+
 def _find_driving_pkl(bundle):
-  if (override := os.environ.get('COMBINED_MODEL_PKL')) and os.path.exists(override):
+  if (override := os.environ.get('COMBINED_MODEL_PKL')) and _pkl_exists(override):
     return override
   if bundle is None or not bundle.models:
     return None
@@ -54,11 +59,11 @@ def _find_driving_pkl(bundle):
 
   pkl_name = bundle.models[0].artifact.file_name
   pkl_path = os.path.join(model_root, pkl_name)
-  if os.path.exists(pkl_path):
+  if _pkl_exists(pkl_path):
     return pkl_path
 
   fallback = os.path.join(model_root, 'driving_tinygrad.pkl')
-  if os.path.exists(fallback):
+  if _pkl_exists(fallback):
     return fallback
   return None
 
@@ -103,9 +108,10 @@ class ModelState(ModelStateBase):
     from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, make_split_input_queues
     from tinygrad.device import Device
 
+    from openpilot.common.file_chunker import read_file_chunked
+
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
-    with open(pkl_path, 'rb') as f:
-      jits = pickle.load(f)
+    jits = pickle.loads(read_file_chunked(pkl_path))
 
     self.DEV = Device.DEFAULT
 

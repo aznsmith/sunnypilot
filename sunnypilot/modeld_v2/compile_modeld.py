@@ -33,15 +33,25 @@ def _detect_desire_key(policy_input_shapes):
   return None
 
 
+def _detect_vision_keys(vision_input_shapes):
+  img_keys = sorted([k for k in vision_input_shapes if 'img' in k])
+  road_key = next((k for k in img_keys if 'big' not in k), None)
+  wide_key = next((k for k in img_keys if 'big' in k), None)
+  if road_key is None or wide_key is None:
+    raise ValueError(f"Cannot determine road/wide image keys from {list(vision_input_shapes.keys())}")
+  return road_key, wide_key
+
+
 def make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device):
-  img = vision_input_shapes['img']
+  road_key, _ = _detect_vision_keys(vision_input_shapes)
+  img = vision_input_shapes[road_key]
   n_frames = img[1] // 6
   img_buf_shape = (frame_skip * (n_frames - 1) + 1, 6, img[2], img[3])
 
   fb = policy_input_shapes['features_buffer']
   desire_key = _detect_desire_key(policy_input_shapes)
   dp = policy_input_shapes[desire_key]
-  tc = policy_input_shapes['traffic_convention']
+  tc = policy_input_shapes.get('traffic_convention', (1, 2))
 
   npy = {
     'desire': np.zeros(dp[2], dtype=np.float32),
@@ -68,7 +78,7 @@ def make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip
 
 def make_run_split_policy(vision_runner, policy_runner, nv12: NV12Frame, model_w, model_h,
                           vision_features_slice, frame_skip, desire_key, extra_policy_keys,
-                          prepare_only=False):
+                          vision_road_key, vision_wide_key, prepare_only=False):
   frame_prepare = make_frame_prepare(nv12, model_w, model_h)
   sample_skip_fn = partial(sample_skip, frame_skip=frame_skip)
   sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
@@ -86,7 +96,7 @@ def make_run_split_policy(vision_runner, policy_runner, nv12: NV12Frame, model_w
     if prepare_only:
       return img, big_img
 
-    vision_out = next(iter(vision_runner({'img': img, 'big_img': big_img}).values())).cast('float32')
+    vision_out = next(iter(vision_runner({vision_road_key: img, vision_wide_key: big_img}).values())).cast('float32')
 
     new_feat = vision_out[:, vision_features_slice].reshape(1, -1).unsqueeze(0)
     feat_buf = shift_and_sample(feat_q, new_feat, sample_skip_fn)
@@ -108,9 +118,11 @@ def compile_split_policy(nv12: NV12Frame, model_w, model_h, prepare_only, frame_
   policy_input_shapes = policy_metadata['input_shapes']
   desire_key = _detect_desire_key(policy_input_shapes)
   extra_policy_keys = [k for k in policy_input_shapes if k not in ('features_buffer', desire_key, 'traffic_convention')]
+  vision_road_key, vision_wide_key = _detect_vision_keys(vision_input_shapes)
 
   _run = make_run_split_policy(vision_runner, policy_runner, nv12, model_w, model_h,
-                               vision_features_slice, frame_skip, desire_key, extra_policy_keys, prepare_only)
+                               vision_features_slice, frame_skip, desire_key, extra_policy_keys,
+                               vision_road_key, vision_wide_key, prepare_only)
   run_policy_jit = TinyJit(_run, prune=True)
 
   SEED = 42
@@ -219,10 +231,10 @@ def make_run_supercombo(model_runner, nv12: NV12Frame, model_w, model_h,
   sample_skip_fn = partial(sample_skip, frame_skip=frame_skip)
   sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
 
-  desire_key = next(k for k in input_shapes if k.startswith('desire'))
-  img_keys = sorted([k for k in input_shapes if 'img' in k])
-  road_img_key = next(k for k in img_keys if 'big' not in k)
-  wide_img_key = next(k for k in img_keys if 'big' in k)
+  desire_key = _detect_desire_key(input_shapes)
+  if desire_key is None:
+    raise ValueError(f"No desire* key found in input_shapes: {list(input_shapes.keys())}")
+  road_img_key, wide_img_key = _detect_vision_keys(input_shapes)
   extra_policy_keys = [k for k in input_shapes
                        if k not in (desire_key, 'features_buffer', 'traffic_convention')
                        and 'img' not in k]
@@ -268,7 +280,7 @@ def make_run_supercombo(model_runner, nv12: NV12Frame, model_w, model_h,
 
 def make_run_vision_multi_policy(vision_runner, policy_runners, nv12: NV12Frame, model_w, model_h,
                                  vision_features_slice, frame_skip, desire_key, extra_policy_keys,
-                                 prepare_only=False):
+                                 vision_road_key, vision_wide_key, prepare_only=False):
   frame_prepare = make_frame_prepare(nv12, model_w, model_h)
   sample_skip_fn = partial(sample_skip, frame_skip=frame_skip)
   sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
@@ -287,7 +299,7 @@ def make_run_vision_multi_policy(vision_runner, policy_runners, nv12: NV12Frame,
     if prepare_only:
       return img, big_img
 
-    vision_out = next(iter(vision_runner({'img': img, 'big_img': big_img}).values())).cast('float32')
+    vision_out = next(iter(vision_runner({vision_road_key: img, vision_wide_key: big_img}).values())).cast('float32')
 
     new_feat = vision_out[:, vision_features_slice].reshape(1, -1).unsqueeze(0)
     feat_buf = shift_and_sample(feat_q, new_feat, sample_skip_fn)
@@ -348,9 +360,11 @@ def compile_multi_policy(nv12: NV12Frame, model_w, model_h, prepare_only, frame_
   policy_input_shapes = policy_metadata['input_shapes']
   desire_key = _detect_desire_key(policy_input_shapes)
   extra_policy_keys = [k for k in policy_input_shapes if k not in ('features_buffer', desire_key, 'traffic_convention')]
+  vision_road_key, vision_wide_key = _detect_vision_keys(vision_input_shapes)
 
   _run = make_run_vision_multi_policy(vision_runner, policy_runners, nv12, model_w, model_h,
-                                      vision_features_slice, frame_skip, desire_key, extra_policy_keys, prepare_only)
+                                      vision_features_slice, frame_skip, desire_key, extra_policy_keys,
+                                      vision_road_key, vision_wide_key, prepare_only)
   run_jit = TinyJit(_run, prune=True)
 
   input_queues, npy = make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, Device.DEFAULT)
@@ -456,4 +470,11 @@ if __name__ == "__main__":
 
   with open(args.output, "wb") as f:
     pickle.dump(out, f)
-  print(f"Saved combined JIT to {args.output} ({os.path.getsize(args.output) / 1e6:.2f} MB)")
+  pkl_size = os.path.getsize(args.output)
+  print(f"Saved combined JIT to {args.output} ({pkl_size / 1e6:.2f} MB)")
+
+  from openpilot.common.file_chunker import chunk_file, get_chunk_paths
+  chunk_targets = get_chunk_paths(args.output, pkl_size)
+  chunk_file(args.output, chunk_targets)
+  num_chunks = len(chunk_targets) - 1
+  print(f"Chunked into {num_chunks} file(s)")
