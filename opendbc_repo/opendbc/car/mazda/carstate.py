@@ -1,8 +1,17 @@
+from enum import IntEnum
+
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
-from opendbc.car.mazda.values import DBC, LKAS_LIMITS
+from opendbc.car.mazda.values import DBC, LKAS_LIMITS, MazdaFlags
+
+
+class TI_STATE(IntEnum):
+  DISCOVER = 0
+  OFF = 1
+  DRIVER_OVER = 2
+  RUN = 3
 
 ButtonType = structs.CarState.ButtonEvent.Type
 
@@ -22,9 +31,18 @@ class CarState(CarStateBase):
     self.accel_button = 0
     self.decel_button = 0
 
+    # Torque Interceptor state
+    self.ti_state = TI_STATE.RUN
+    self.ti_version = 1
+    self.ti_ramp_down = False
+    self.ti_violation = 0
+    self.ti_error = 0
+    self.ti_lkas_allowed = False
+
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
     cp_cam = can_parsers[Bus.cam]
+    cp_ti = can_parsers.get(Bus.body)
 
     ret = structs.CarState()
     ret_sp = structs.CarStateSP()
@@ -98,10 +116,21 @@ class CarState(CarStateBase):
         self.low_speed_alert = False
     ret.lowSpeedAlert = self.low_speed_alert
 
-    # Check if LKAS is disabled due to lack of driver torque when all other states indicate
-    # it should be enabled (steer lockout). Don't warn until we actually get lkas active
-    # and lose it again, i.e, after initial lkas activation
-    ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked
+    # Read Torque Interceptor feedback from bus 1 when TI is enabled
+    if cp_ti is not None and self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR:
+      self.ti_version = cp_ti.vl["TI_FEEDBACK"]["VERSION_NUMBER"]
+      self.ti_state = cp_ti.vl["TI_FEEDBACK"]["STATE"]
+      self.ti_violation = cp_ti.vl["TI_FEEDBACK"]["VIOL"]
+      self.ti_error = cp_ti.vl["TI_FEEDBACK"]["ERROR"]
+      if self.ti_version > 1:
+        self.ti_ramp_down = (cp_ti.vl["TI_FEEDBACK"]["RAMP_DOWN"] == 1)
+      self.ti_lkas_allowed = not self.ti_ramp_down and self.ti_state == TI_STATE.RUN
+
+    # steerFaultTemporary: use TI error when interceptor active, otherwise stock LKAS block signal
+    if self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR:
+      ret.steerFaultTemporary = bool(self.ti_error)
+    else:
+      ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked
 
     self.acc_active_last = ret.cruiseState.enabled
 
@@ -130,7 +159,10 @@ class CarState(CarStateBase):
 
   @staticmethod
   def get_can_parsers(CP, CP_SP):
-    return {
+    parsers = {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 0),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 2),
     }
+    if CP.flags & MazdaFlags.TORQUE_INTERCEPTOR:
+      parsers[Bus.body] = CANParser(DBC[CP.carFingerprint][Bus.pt], [], 1)
+    return parsers

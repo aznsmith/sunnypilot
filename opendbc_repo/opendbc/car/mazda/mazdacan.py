@@ -88,6 +88,16 @@ def create_alert_command(packer, cam_msg: dict, ldw: bool, steer_required: bool)
   return packer.make_can_msg("CAM_LANEINFO", 0, values)
 
 
+def create_ti_lkas_cmd(packer, ti_apply_torque):
+  """Send steering command to the Torque Interceptor (MICI) device on bus 1."""
+  values = {
+    "LKAS_REQUEST": ti_apply_torque,
+    "CHKSUM": ti_apply_torque,
+    "KEY": 3294744160,
+  }
+  return packer.make_can_msg("CAM_LKAS2", 1, values)
+
+
 def create_button_cmd(packer, CP, counter, button):
 
   can = int(button == Buttons.CANCEL)

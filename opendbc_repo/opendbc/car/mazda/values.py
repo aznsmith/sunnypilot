@@ -40,6 +40,8 @@ class MazdaFlags(IntFlag):
   # Static flags
   # Gen 1 hardware: same CAN messages and same camera
   GEN1 = 1
+  # Torque Interceptor (MICI) hardware connected on OBD-II port (bus 1)
+  TORQUE_INTERCEPTOR = 8
 
 
 @dataclass

@@ -3,7 +3,7 @@ from opendbc.car import Bus, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.values import CarControllerParams, Buttons
+from opendbc.car.mazda.values import CarControllerParams, Buttons, MazdaFlags
 
 from opendbc.sunnypilot.car.mazda.icbm import IntelligentCruiseButtonManagementInterface
 
@@ -15,6 +15,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
     IntelligentCruiseButtonManagementInterface.__init__(self, CP, CP_SP)
     self.apply_torque_last = 0
+    self.ti_apply_torque_last = 0
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.brake_counter = 0
 
@@ -22,12 +23,18 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     can_sends = []
 
     apply_torque = 0
+    ti_apply_torque = 0
 
     if CC.latActive:
       # calculate steer and also set limits due to driver torque
       new_torque = int(round(CC.actuators.torque * CarControllerParams.STEER_MAX))
       apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
                                                       CS.out.steeringTorque, CarControllerParams)
+
+      if self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR and CS.ti_lkas_allowed:
+        ti_new_torque = int(round(CC.actuators.torque * CarControllerParams.STEER_MAX))
+        ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.ti_apply_torque_last,
+                                                           CS.out.steeringTorque, CarControllerParams)
 
     if CC.cruiseControl.cancel:
       # If brake is pressed, let us wait >70ms before trying to disable crz to avoid
@@ -47,6 +54,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
         can_sends.append(mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter, Buttons.RESUME))
 
     self.apply_torque_last = apply_torque
+    self.ti_apply_torque_last = ti_apply_torque
 
     # send HUD alerts
     if self.frame % 50 == 0:
@@ -59,6 +67,10 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # send steering command
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,
                                                       self.frame, apply_torque, CS.cam_lkas))
+
+    # send TI command when interceptor is active and allowed
+    if self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR and ti_apply_torque != 0:
+      can_sends.append(mazdacan.create_ti_lkas_cmd(self.packer, ti_apply_torque))
 
     # Intelligent Cruise Button Management
     can_sends.extend(IntelligentCruiseButtonManagementInterface.update(self, CC_SP, CS, self.packer, self.frame, self.last_button_frame))
