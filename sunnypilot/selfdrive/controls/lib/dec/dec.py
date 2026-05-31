@@ -8,7 +8,6 @@ See the LICENSE.md file in the root directory for more details.
 
 from typing import Literal
 
-import numpy as np
 from cereal import messaging
 from numpy import interp
 from opendbc.car import structs
@@ -127,8 +126,6 @@ class DynamicExperimentalController:
     self._active: bool = False
     self._frame: int = 0
     self._urgency = 0.0
-    self._v_ego = 0.0
-    self._model_accel_min = 0.0
 
     self._mode_manager = ModeTransitionManager()
 
@@ -180,22 +177,6 @@ class DynamicExperimentalController:
   def mode(self) -> str:
     return self._mode_manager.get_mode()
 
-  def apply_stop_shaping(self, a_target: float) -> float:
-    """Front-load a model-predicted slow-down (lead or light) in blended. Monotonic."""
-    if not self._active:
-      return a_target
-
-    a_target = float(a_target)
-    if not self._has_slow_down:
-      return a_target
-    if not (WMACConstants.STOP_SHAPE_V_MIN <= self._v_ego <= WMACConstants.STOP_SHAPE_V_MAX) \
-        or a_target >= WMACConstants.STOP_SHAPE_A_ENTER:
-      return a_target
-    if self._model_accel_min >= a_target - WMACConstants.STOP_SHAPE_A_MARGIN:
-      return a_target
-
-    return min(a_target, max(self._model_accel_min, WMACConstants.STOP_SHAPE_A_FLOOR))
-
   def enabled(self) -> bool:
     return self._enabled
 
@@ -210,18 +191,9 @@ class DynamicExperimentalController:
     lead_one = sm['radarState'].leadOne
     md = sm['modelV2']
 
-    self._v_ego = car_state.vEgo
     self._v_ego_kph = car_state.vEgo * 3.6
     self._v_cruise_kph = car_state.vCruise
     self._has_standstill = car_state.standstill
-
-    # predicted-accel lookahead for stop-shaping
-    accel_x = md.acceleration.x
-    if len(accel_x) == WMACConstants.TRAJECTORY_SIZE:
-      m = float(np.interp(WMACConstants.STOP_SHAPE_A_LOOK_BP, WMACConstants.STOP_SHAPE_T_IDXS, accel_x).min())
-      self._model_accel_min = m if np.isfinite(m) else 0.0
-    else:
-      self._model_accel_min = 0.0
 
     if self._has_standstill:
       self._standstill_count = min(WMACConstants.STANDSTILL_FRAMES * 3, self._standstill_count + 1)

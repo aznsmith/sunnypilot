@@ -57,7 +57,7 @@ class LongitudinalPlannerSP:
 
   @output_a_target.setter
   def output_a_target(self, value: float) -> None:
-    value = self.dec.apply_stop_shaping(float(value))
+    value = float(value)
     if not math.isfinite(value):
       return
     prev = self._output_a_target

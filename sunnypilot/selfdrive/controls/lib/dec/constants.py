@@ -1,7 +1,4 @@
-import numpy as np
-
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.modeld.constants import ModelConstants
 
 
 class WMACConstants:
@@ -47,12 +44,3 @@ class WMACConstants:
   SLOWNESS_RISE_RATE = 0.35
   SLOWNESS_FALL_RATE = 0.5
   SLOWNESS_CRUISE_OFFSET = 1.025
-
-  # Stop-shaping: front-load a no-radar-lead vision stop (see apply_stop_shaping)
-  STOP_SHAPE_T_IDXS = np.array(ModelConstants.T_IDXS)
-  STOP_SHAPE_A_LOOK_BP = np.linspace(0.5, 3.0, 26)  # predicted-accel lookahead window (s)
-  STOP_SHAPE_V_MIN = 2.0
-  STOP_SHAPE_V_MAX = 25.0
-  STOP_SHAPE_A_ENTER = -0.2     # engage threshold (already braking)
-  STOP_SHAPE_A_MARGIN = 0.4
-  STOP_SHAPE_A_FLOOR = -2.2     # comfort cap
