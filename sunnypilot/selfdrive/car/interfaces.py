@@ -134,4 +134,18 @@ def initialize_params(params) -> list[dict[str, Any]]:
     "ToyotaStopAndGoHack",
   ])
 
-  return [{k: params.get(k, return_default=True)} for k in keys]
+  result = [{k: params.get(k, return_default=True)} for k in keys]
+
+  # mazda — read directly from filesystem to support prebuilt binaries compiled before
+  # MazdaTorqueInterceptorEnabled was added to params_keys.h
+  import os
+  try:
+    result.append({'MazdaTorqueInterceptorEnabled': params.get('MazdaTorqueInterceptorEnabled', return_default=True)})
+  except Exception:
+    try:
+      _p = '/data/params/d/MazdaTorqueInterceptorEnabled'
+      result.append({'MazdaTorqueInterceptorEnabled': open(_p).read().strip() if os.path.exists(_p) else None})
+    except Exception:
+      result.append({'MazdaTorqueInterceptorEnabled': None})
+
+  return result
