@@ -7,6 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 
 from cereal import custom
 import numpy as np
+from opendbc.car.interfaces import ACCEL_MIN
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.params import Params
@@ -15,7 +16,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 AccelPersonality = custom.LongitudinalPlanSP.AccelerationPersonality
 ACCEL_PERSONALITY_OPTIONS = [AccelPersonality.eco, AccelPersonality.normal, AccelPersonality.sport]
 
-
+# Gas ceiling (MPC accel-max) per personality, by v_ego. Ramps off near set speed.
 A_MAX_BP = [0.0, 4.0, 8.0, 16.0, 40.0]
 A_MAX_V = {
   AccelPersonality.eco:    [1.40, 1.40, 1.30, 0.43, 0.08],
@@ -23,35 +24,30 @@ A_MAX_V = {
   AccelPersonality.sport:  [2.20, 2.20, 1.60, 0.70, 0.25],
 }
 
-COAST_DRAG_BP = [0.0, 10.0, 25.0, 40.0]
-COAST_DRAG_V = {
-  AccelPersonality.eco:    [-0.03, -0.05, -0.08, -0.12],
-  AccelPersonality.normal: [-0.04, -0.07, -0.12, -0.18],
-  AccelPersonality.sport:  [-0.06, -0.10, -0.18, -0.28],
+# ACC-mode braking authority (hard MPC accel-min). Per-speed brake ceiling per personality.
+# Gentler at low/mid speed (felt, short stops) and near-stock at highway (retain authority).
+# Clamped to ACCEL_MIN so it never exceeds the stock/physical floor. Used ONLY in ACC mode;
+# blended and controller-off fall back to ACCEL_MIN (full authority). Defers harder-than-floor
+# braking to FCW/AEB.
+A_BRAKE_FLOOR_BP = [2.0, 8.0, 16.0, 30.0, 40.0]  # m/s
+A_BRAKE_FLOOR_V = {
+  AccelPersonality.eco:    [-1.6, -2.1, -2.6, -3.0, -3.2],
+  AccelPersonality.normal: [-2.0, -2.6, -3.0, -3.3, -3.5],
+  AccelPersonality.sport:  [-2.4, -3.0, -3.4, -3.5, -3.5],
 }
 
-A_MIN_FLOOR_BP =      [2.0,    4.0,    8.0,   16.,   40.0]  # m/s
-A_MIN_FLOOR_V = {
-  AccelPersonality.eco:    [-0.002, -0.45, -0.30, -0.03, -0.42],
-  AccelPersonality.normal: [-0.002, -0.47, -0.32, -0.05, -0.60],
-  AccelPersonality.sport:  [-0.002, -0.50, -0.35, -0.07, -0.80],
-}
-
-DEFICIT_TO_FLOOR = 8.5
-COAST_DEADBAND = 1.0
 RAMP_OFF_RANGE = 5.0
-
-A_MIN_TIGHTEN_RATE = 0.6
-A_MIN_RELAX_RATE = 0.9
 A_MAX_RATE_UP = 1.2
 A_MAX_RATE_DOWN = 0.6
-
-MIN_MAX_GAP = 0.05
 
 PARAM_REFRESH_FRAMES = max(1, int(1.0 / DT_MDL))
 
 
 class AccelPersonalityController:
+  """Two jobs: the gas ceiling (get_max_accel) and the ACC-mode brake floor (get_brake_floor),
+  both per-personality (eco/normal/sport). The planner feeds these into the MPC accel box.
+  Blended-mode and controller-off braking are handled stock by the planner (ACCEL_MIN)."""
+
   def __init__(self):
     self.params = Params()
     self.frame = 0
@@ -62,12 +58,10 @@ class AccelPersonalityController:
     self._enabled = self.params.get_bool('AccelPersonalityEnabled')
 
     self._v_cruise = 0.0
-    self._a_min = -0.05
     self._a_max = 1.50
 
     self._cache_v: float | None = None
     self._cache_v_cruise: float | None = None
-    self._cache_a_min = self._a_min
     self._cache_a_max = self._a_max
 
   def update(self, sm=None):
@@ -124,27 +118,27 @@ class AccelPersonalityController:
     self.params.put('AccelPersonality', self._personality)
     self.frame = 0
     self._first = True
-    self._a_min = -0.05
     self._a_max = 1.50
     self._cache_v = None
     self._cache_v_cruise = None
 
-  def get_accel_limits(self, v_ego: float) -> tuple[float, float]:
+  def get_max_accel(self, v_ego: float) -> float:
     v_ego = max(0.0, v_ego)
     if (self._cache_v is not None
         and abs(self._cache_v - v_ego) < 0.01
         and self._cache_v_cruise == self._v_cruise):
-      return self._cache_a_min, self._cache_a_max
-    self._cache_a_min, self._cache_a_max = self._step(v_ego)
+      return self._cache_a_max
+    self._cache_a_max = self._step_max(v_ego)
     self._cache_v = v_ego
     self._cache_v_cruise = self._v_cruise
-    return self._cache_a_min, self._cache_a_max
+    return self._cache_a_max
 
-  def get_min_accel(self, v_ego: float) -> float:
-    return self.get_accel_limits(v_ego)[0]
-
-  def get_max_accel(self, v_ego: float) -> float:
-    return self.get_accel_limits(v_ego)[1]
+  def get_brake_floor(self, v_ego: float) -> float:
+    # ACC-mode hard brake ceiling (MPC accel-min). Stateless per-speed lookup, clamped to
+    # the stock physical floor. Tracks v_ego smoothly via interp; output smoothness is handled
+    # downstream by the MPC + output_a_target jerk-cap.
+    floor = float(np.interp(max(0.0, v_ego), A_BRAKE_FLOOR_BP, A_BRAKE_FLOOR_V[self._personality]))
+    return max(ACCEL_MIN, floor)
 
   def _ramp_off(self, v_ego: float) -> float:
     if self._v_cruise <= 0.0:
@@ -155,41 +149,13 @@ class AccelPersonalityController:
     base = float(np.interp(v_ego, A_MAX_BP, A_MAX_V[self._personality]))
     return base * self._ramp_off(v_ego)
 
-  def _target_min(self, v_ego: float) -> float:
-    coast = float(np.interp(v_ego, COAST_DRAG_BP, COAST_DRAG_V[self._personality]))
-    if self._v_cruise <= 0.0 or v_ego >= self._v_cruise:
-      return coast
-    floor = float(np.interp(v_ego, A_MIN_FLOOR_BP, A_MIN_FLOOR_V[self._personality]))
-    floor = min(floor, coast)  # never allow less decel than coasting drag
-    deficit = self._v_cruise - v_ego
-    t = float(np.clip(deficit / DEFICIT_TO_FLOOR, 0.0, 1.0)) ** 1.5
-    return coast + t * (floor - coast)
-
-  def _apply_coast_deadband(self, v_ego: float, t_min: float, t_max: float) -> tuple[float, float]:
-    if self._v_cruise <= 0.0 or abs(v_ego - self._v_cruise) >= COAST_DEADBAND:
-      return t_min, t_max
-    coast = float(np.interp(v_ego, COAST_DRAG_BP, COAST_DRAG_V[self._personality]))
-    return coast, max(0.05, t_max * 0.25)
-
-  def _rate_limit(self, last: float, target: float, rate_down: float, rate_up: float) -> float:
-    rate = rate_up if target > last else rate_down
-    step = rate * DT_MDL
-    return float(np.clip(target, last - step, last + step))
-
-  def _step(self, v_ego: float) -> tuple[float, float]:
+  def _step_max(self, v_ego: float) -> float:
     t_max = self._target_max(v_ego)
-    t_min = self._target_min(v_ego)
-    t_min, t_max = self._apply_coast_deadband(v_ego, t_min, t_max)
-
     if self._first:
-      self._a_min, self._a_max = t_min, t_max
+      self._a_max = t_max
       self._first = False
-      return self._a_min, self._a_max
-
-    new_min = self._rate_limit(self._a_min, t_min, rate_down=A_MIN_TIGHTEN_RATE, rate_up=A_MIN_RELAX_RATE)
-    new_max = self._rate_limit(self._a_max, t_max, rate_down=A_MAX_RATE_DOWN, rate_up=A_MAX_RATE_UP)
-
-    new_min = min(new_min, new_max - MIN_MAX_GAP)
-
-    self._a_min, self._a_max = new_min, new_max
-    return self._a_min, self._a_max
+      return self._a_max
+    rate = A_MAX_RATE_UP if t_max > self._a_max else A_MAX_RATE_DOWN
+    step = rate * DT_MDL
+    self._a_max = float(np.clip(t_max, self._a_max - step, self._a_max + step))
+    return self._a_max

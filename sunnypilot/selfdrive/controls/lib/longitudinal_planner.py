@@ -22,7 +22,7 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_controller import AccelPersonalityController
 from openpilot.sunnypilot.selfdrive.controls.lib.radar_distance.radar_distance import RadarDistanceController
-from opendbc.car.interfaces import ACCEL_MIN
+from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 
 # output a_target jerk-cap; FCW/stop bypass it for full brake authority
 JERK_IN_MAX = 3.5   # m/s^3, brake building
@@ -80,10 +80,14 @@ class LongitudinalPlannerSP:
       return [ACCEL_MIN, self.accel_controller.get_max_accel(v_ego)]
     return None
 
-  def get_cruise_min_accel(self, v_ego: float) -> float | None:
-    if self.accel_controller.is_enabled():
-      return self.accel_controller.get_min_accel(v_ego)
-    return None
+  def get_mpc_accel_limits(self, v_ego: float, acc_mode: bool) -> tuple[float, float]:
+    # Hard MPC accel box (params[:,0]/[1]). ACC mode + controller on -> personality brake floor
+    # governs braking. Blended (not acc_mode) or controller off -> stock ACCEL_MIN/ACCEL_MAX.
+    if not self.accel_controller.is_enabled():
+      return ACCEL_MIN, ACCEL_MAX
+    accel_max = self.accel_controller.get_max_accel(v_ego)
+    accel_min = self.accel_controller.get_brake_floor(v_ego) if acc_mode else ACCEL_MIN
+    return accel_min, accel_max
 
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
     CS = sm['carState']
