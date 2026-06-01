@@ -88,12 +88,37 @@ def create_short_name(full_name):
   return result[:8]
 
 
+def _read_pkl_bytes(pkl_path: Path) -> bytes:
+  manifest = Path(f"{pkl_path}.chunkmanifest")
+  if manifest.exists():
+    num_chunks = int(manifest.read_text().strip())
+    parts = []
+    for i in range(num_chunks):
+      chunk = Path(f"{pkl_path}.chunk{i + 1:02d}of{num_chunks:02d}")
+      parts.append(chunk.read_bytes())
+    return b''.join(parts)
+  return pkl_path.read_bytes()
+
+
 def _find_driving_pkl(output_path: Path) -> Path | None:
   for pattern in ('driving_tinygrad.pkl', 'driving_*_tinygrad.pkl'):
     matches = sorted(output_path.glob(pattern))
     if matches:
       return matches[0]
+  for pattern in ('driving_tinygrad.pkl.chunkmanifest', 'driving_*_tinygrad.pkl.chunkmanifest'):
+    matches = sorted(output_path.glob(pattern))
+    if matches:
+      return Path(str(matches[0]).removesuffix('.chunkmanifest'))
   return None
+
+
+def _rename_pkl_with_chunks(old_pkl: Path, new_pkl: Path) -> Path:
+  manifest = Path(f"{old_pkl}.chunkmanifest")
+  if manifest.exists():
+    for f in sorted(old_pkl.parent.glob(f"{old_pkl.name}.chunk*")):
+      f.rename(old_pkl.parent / f.name.replace(old_pkl.name, new_pkl.name, 1))
+    return new_pkl
+  return old_pkl.rename(new_pkl)
 
 
 def generate_metadata(model_path: Path, output_dir: Path, short_name: str, driving_pkl: Path):
@@ -111,8 +136,7 @@ def generate_metadata(model_path: Path, output_dir: Path, short_name: str, drivi
     print(f"Warning: Missing metadata for {base} ({metadata_file}), skipping", file=sys.stderr)
     return
 
-  with open(driving_pkl, 'rb') as f:
-    tinygrad_hash = hashlib.sha256(f.read()).hexdigest()
+  tinygrad_hash = hashlib.sha256(_read_pkl_bytes(driving_pkl)).hexdigest()
 
   with open(metadata_file, 'rb') as f:
     metadata_hash = hashlib.sha256(f.read()).hexdigest()
@@ -201,7 +225,7 @@ if __name__ == "__main__":
   if _short_name:
     new_pkl = _output_dir / f"driving_{_short_name.lower()}_tinygrad.pkl"
     if not new_pkl.exists():
-      _driving_pkl = _driving_pkl.rename(new_pkl)
+      _driving_pkl = _rename_pkl_with_chunks(_driving_pkl, new_pkl)
     else:
       _driving_pkl = new_pkl
 

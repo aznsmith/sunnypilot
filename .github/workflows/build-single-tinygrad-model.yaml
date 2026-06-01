@@ -44,6 +44,11 @@ on:
         description: 'Custom name for the model (no date, only name)'
         required: false
         type: string
+      is_20hz:
+        description: 'Is this a 20Hz model'
+        required: false
+        type: boolean
+        default: true
       recompiled_dir:
         description: 'Existing recompiled directory number (e.g. 3 for recompiled3)'
         required: true
