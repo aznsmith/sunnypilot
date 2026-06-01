@@ -10,7 +10,44 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_control
   A_BRAKE_FLOOR_BP,
   A_BRAKE_FLOOR_V,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 from opendbc.car.interfaces import ACCEL_MIN
+
+
+class _Lead:
+  def __init__(self, status=True, v_rel=0.0, d_rel=50.0):
+    self.status = status
+    self.vRel = v_rel
+    self.dRel = d_rel
+
+
+class TestBrakeFloorRelax:
+  GENTLE = -1.5
+
+  def test_no_lead_keeps_floor(self):
+    assert LongitudinalPlannerSP._relax_brake_floor(self.GENTLE, None) == self.GENTLE
+    assert LongitudinalPlannerSP._relax_brake_floor(self.GENTLE, _Lead(status=False, v_rel=-10)) == self.GENTLE
+
+  def test_not_closing_keeps_floor(self):
+    assert LongitudinalPlannerSP._relax_brake_floor(self.GENTLE, _Lead(v_rel=0.0)) == self.GENTLE
+    assert LongitudinalPlannerSP._relax_brake_floor(self.GENTLE, _Lead(v_rel=-1.0)) == self.GENTLE
+
+  def test_fast_closing_full_authority(self):
+    # the da event: lead 87 m closing -17.5 m/s -> floor must relax to full ACCEL_MIN
+    f = LongitudinalPlannerSP._relax_brake_floor(self.GENTLE, _Lead(v_rel=-17.5, d_rel=87.0))
+    assert abs(f - ACCEL_MIN) < 1e-6
+
+  def test_low_ttc_full_authority(self):
+    f = LongitudinalPlannerSP._relax_brake_floor(self.GENTLE, _Lead(v_rel=-5.0, d_rel=15.0))  # ttc 3s
+    assert abs(f - ACCEL_MIN) < 1e-6
+
+  def test_partial_relax(self):
+    f = LongitudinalPlannerSP._relax_brake_floor(self.GENTLE, _Lead(v_rel=-3.0, d_rel=60.0))
+    assert ACCEL_MIN < f < self.GENTLE
+
+  def test_never_softer_than_floor(self):
+    for v in (-2.5, -4.0, -10.0):
+      assert LongitudinalPlannerSP._relax_brake_floor(self.GENTLE, _Lead(v_rel=v, d_rel=30.0)) <= self.GENTLE + 1e-9
 
 PERSONALITIES = (AccelPersonality.eco, AccelPersonality.normal, AccelPersonality.sport)
 SPEEDS = (0.0, 2.0, 8.0, 16.0, 30.0, 40.0, 55.0)

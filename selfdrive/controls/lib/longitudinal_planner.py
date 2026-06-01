@@ -139,7 +139,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     radarstate = self.smooth_radarstate(sm['radarState'])
-    accel_min, accel_max = self.get_mpc_accel_limits(v_ego, not self.is_e2e(sm))
+    accel_min, accel_max = self.get_mpc_accel_limits(v_ego, not self.is_e2e(sm), radarstate.leadOne)
     self.mpc.update(radarstate, v_cruise, personality=sm['selfdriveState'].personality,
                     accel_min=accel_min, accel_max=accel_max)
 
