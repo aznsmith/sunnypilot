@@ -252,13 +252,17 @@ class ModelState(ModelStateBase):
 
     curvature_plan = plan + (self.PLANPLUS_CONTROL - 1.0) * model_output['planplus'][0] if 'planplus' in model_output and self.PLANPLUS_CONTROL != 1.0 else plan
     desired_curvature = get_curvature_from_output(model_output, curvature_plan, v_ego, lat_action_t, self.mlsim)
-    if self.generation is not None and self.generation >= 10: # smooth curvature for post FOF models
+    if self.generation is not None and self.generation >= 10:  # smooth curvature for post FOF models
       if v_ego > self.MIN_LAT_CONTROL_SPEED:
         desired_curvature = smooth_value(desired_curvature, prev_action.desiredCurvature, self.LAT_SMOOTH_SECONDS)
       else:
         desired_curvature = prev_action.desiredCurvature
 
-    return log.ModelDataV2.Action(desiredCurvature=float(desired_curvature),desiredAcceleration=float(desired_accel), shouldStop=bool(should_stop))
+    action = log.ModelDataV2.Action()
+    action.desiredCurvature = float(desired_curvature)
+    action.desiredAcceleration = float(desired_accel)
+    action.shouldStop = bool(should_stop)
+    return action
 
 
 def main(demo=False):
