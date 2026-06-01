@@ -26,6 +26,27 @@ from opendbc.car.interfaces import ACCEL_MIN
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
+# stop-hold: once stopped, hold the stop and suppress creep until a sustained go, so the
+# stop/go transition is smooth and never gas-brakes at standstill.
+V_STOP_HOLD = 0.5     # m/s, latch the hold below this speed
+STOP_GO_FRAMES = 6    # consecutive not-should-stop frames required to release (~0.3 s)
+
+
+def apply_stop_hold(held: bool, go_count: int, v_ego: float, a_target: float, should_stop: bool):
+  if should_stop and v_ego < V_STOP_HOLD:
+    held = True
+  if held:
+    if should_stop:
+      go_count = 0
+    else:
+      go_count += 1
+      if go_count >= STOP_GO_FRAMES:
+        held = False
+    if held:
+      should_stop = True
+      a_target = min(a_target, 0.0)
+  return a_target, should_stop, held, go_count
+
 
 class LongitudinalPlannerSP:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
@@ -43,6 +64,8 @@ class LongitudinalPlannerSP:
 
     self.output_v_target = 0.
     self._output_a_target = 0.
+    self._stop_held = False
+    self._stop_go_count = 0
 
   @property
   def output_a_target(self) -> float:
@@ -75,6 +98,11 @@ class LongitudinalPlannerSP:
     if self.accel_controller.is_enabled():
       return self.accel_controller.get_jerk_scale()
     return 1.0
+
+  def stop_hold(self, v_ego: float, a_target: float, should_stop: bool) -> tuple[float, bool]:
+    a_target, should_stop, self._stop_held, self._stop_go_count = apply_stop_hold(
+      self._stop_held, self._stop_go_count, v_ego, a_target, should_stop)
+    return a_target, should_stop
 
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
     CS = sm['carState']
