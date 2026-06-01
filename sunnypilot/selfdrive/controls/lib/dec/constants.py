@@ -6,8 +6,8 @@ class WMACConstants:
   PARAM_READ_FRAMES = max(1, int(round(1.0 / DT_MDL)))
 
   EMERGENCY_HOLD_FRAMES = max(1, int(round(0.75 / DT_MDL)))
-  MIN_MODE_DURATION = {'acc': max(1, int(round(0.35 / DT_MDL))), 'blended': max(1, int(round(0.5 / DT_MDL)))}
-  ENTER_BLENDED_FRAMES = max(1, int(round(0.1 / DT_MDL)))
+  MIN_MODE_DURATION = {'acc': max(1, int(round(0.6 / DT_MDL))), 'blended': max(1, int(round(0.5 / DT_MDL)))}
+  ENTER_BLENDED_FRAMES = max(1, int(round(0.4 / DT_MDL)))
   EXIT_BLENDED_FRAMES = max(1, int(round(0.35 / DT_MDL)))
   STANDSTILL_FRAMES = max(1, int(round(0.2 / DT_MDL)))
 
