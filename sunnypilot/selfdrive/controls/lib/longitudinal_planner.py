@@ -19,22 +19,9 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolve
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
-from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_controller import AccelPersonalityController
 from openpilot.sunnypilot.selfdrive.controls.lib.radar_distance.radar_distance import RadarDistanceController
-from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
-
-# output a_target jerk-cap; FCW/stop bypass it for full brake authority
-JERK_IN_MAX = 3.5   # m/s^3, brake building
-JERK_OUT_MAX = 6.0  # m/s^3, brake releasing
-
-# Relax the personality brake floor toward full authority (ACCEL_MIN) as a lead closes, so the
-# gentle floor stays gentle when following steadily but never under-brakes a closing lead.
-# u in [0,1]: 0 = full gentle floor (slow/far), 1 = ACCEL_MIN (urgent close).
-_FLOOR_RELAX_VREL_LO = -2.0   # m/s, closing faster than this begins relaxing
-_FLOOR_RELAX_VREL_HI = -8.0   # m/s, closing at/beyond this = full authority
-_FLOOR_RELAX_TTC_HI = 8.0     # s, above this no TTC relax
-_FLOOR_RELAX_TTC_LO = 4.0     # s, at/below this = full authority
+from opendbc.car.interfaces import ACCEL_MIN
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
@@ -56,8 +43,6 @@ class LongitudinalPlannerSP:
 
     self.output_v_target = 0.
     self._output_a_target = 0.
-    self.fcw = False
-    self.output_should_stop = False
 
   @property
   def output_a_target(self) -> float:
@@ -65,16 +50,10 @@ class LongitudinalPlannerSP:
 
   @output_a_target.setter
   def output_a_target(self, value: float) -> None:
+    # guard against a NaN/inf accel poisoning the control loop; otherwise pass through.
     value = float(value)
-    if not math.isfinite(value):
-      return
-    prev = self._output_a_target
-    if self.fcw or self.output_should_stop:  # full authority, no rate limit
+    if math.isfinite(value):
       self._output_a_target = value
-      return
-    max_down = prev - JERK_IN_MAX * DT_MDL
-    max_up = prev + JERK_OUT_MAX * DT_MDL
-    self._output_a_target = max(max_down, min(max_up, value))
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -84,37 +63,10 @@ class LongitudinalPlannerSP:
     return experimental_mode and self.dec.mode() == "blended"
 
   def get_accel_clip(self, v_ego: float) -> list[float] | None:
+    # personality gas ceiling; braking stays at the stock ACCEL_MIN floor.
     if self.accel_controller.is_enabled():
       return [ACCEL_MIN, self.accel_controller.get_max_accel(v_ego)]
     return None
-
-  @staticmethod
-  def _relax_brake_floor(floor: float, lead) -> float:
-    # Lerp the gentle floor toward ACCEL_MIN by how urgently the lead is closing, so a closing
-    # lead always gets the braking authority it needs while steady following stays gentle.
-    if lead is None or not lead.status:
-      return floor
-    v_rel = float(lead.vRel)
-    if v_rel >= _FLOOR_RELAX_VREL_LO:
-      return floor
-    u_vrel = (v_rel - _FLOOR_RELAX_VREL_LO) / (_FLOOR_RELAX_VREL_HI - _FLOOR_RELAX_VREL_LO)
-    ttc = float(lead.dRel) / max(0.1, -v_rel)
-    u_ttc = (_FLOOR_RELAX_TTC_HI - ttc) / (_FLOOR_RELAX_TTC_HI - _FLOOR_RELAX_TTC_LO)
-    u = max(0.0, min(1.0, max(u_vrel, u_ttc)))
-    return floor + u * (ACCEL_MIN - floor)
-
-  def get_mpc_accel_limits(self, v_ego: float, acc_mode: bool, lead=None) -> tuple[float, float]:
-    # MPC accel box (params[:,0]/[1]). ACC mode + controller on -> personality brake floor governs
-    # braking, but it is relaxed toward ACCEL_MIN as a lead closes (never under-brake a closing
-    # lead). Emergencies (FCW, stop command) and blended mode get full stock authority outright.
-    # Controller off -> stock ACCEL_MIN/ACCEL_MAX.
-    if not self.accel_controller.is_enabled():
-      return ACCEL_MIN, ACCEL_MAX
-    accel_max = self.accel_controller.get_max_accel(v_ego)
-    if not acc_mode or self.fcw or self.output_should_stop:
-      return ACCEL_MIN, accel_max
-    floor = self._relax_brake_floor(self.accel_controller.get_brake_floor(v_ego), lead)
-    return floor, accel_max
 
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
     CS = sm['carState']
