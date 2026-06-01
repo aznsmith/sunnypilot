@@ -33,6 +33,17 @@ class ModelManagerSP:
     self._chunk_size = 128 * 1000  # 128 KB chunks
     self._download_start_times: dict[str, float] = {}  # Track start time per model
 
+  def _sync_artifact_progress(self, source_artifact) -> None:
+    """Mirror download progress to all artifacts sharing the same filename in the selected bundle."""
+    if not self.selected_bundle:
+      return
+    for model in self.selected_bundle.models:
+      for artifact in (model.artifact, model.metadata):
+        if artifact is not source_artifact and artifact.fileName == source_artifact.fileName:
+          artifact.downloadProgress.status = source_artifact.downloadProgress.status
+          artifact.downloadProgress.progress = source_artifact.downloadProgress.progress
+          artifact.downloadProgress.eta = source_artifact.downloadProgress.eta
+
   def _calculate_eta(self, filename: str, progress: float) -> int:
     """Calculate ETA based on elapsed time and current progress"""
     if filename not in self._download_start_times or progress <= 0:
@@ -63,7 +74,7 @@ class ModelManagerSP:
             f.write(chunk)
             bytes_downloaded += len(chunk)
 
-            if not self.params.get("ModelManager_DownloadIndex"):
+            if self.params.get("ModelManager_DownloadIndex") is None:
               raise Exception("Download cancelled")
 
             if total_size > 0:
@@ -71,6 +82,7 @@ class ModelManagerSP:
               model.downloadProgress.status = custom.ModelManagerSP.DownloadStatus.downloading
               model.downloadProgress.progress = progress
               model.downloadProgress.eta = self._calculate_eta(model.fileName, progress)
+              self._sync_artifact_progress(model)
               self._report_status()
 
         # Clean up start time after download completes
@@ -89,31 +101,33 @@ class ModelManagerSP:
         num_chunks = int((await resp.read()).strip())
 
     self._download_start_times[artifact.fileName] = time.monotonic()
-    total_downloaded = 0
-    total_size = 0
 
     for i in range(num_chunks):
       chunk_url = get_chunk_name(base_url, i, num_chunks)
       chunk_path = get_chunk_name(base_path, i, num_chunks)
+      chunk_downloaded = 0
       async with aiohttp.ClientSession() as session:
         async with session.get(chunk_url) as response:
           response.raise_for_status()
           chunk_size = int(response.headers.get("content-length", 0))
-          total_size += chunk_size
           with open(chunk_path, 'wb') as f:
             async for data in response.content.iter_chunked(self._chunk_size):
               f.write(data)
-              total_downloaded += len(data)
-              if not self.params.get("ModelManager_DownloadIndex"):
+              chunk_downloaded += len(data)
+              if self.params.get("ModelManager_DownloadIndex") is None:
                 raise Exception("Download cancelled")
-              if total_size > 0:
-                artifact.downloadProgress.status = custom.ModelManagerSP.DownloadStatus.downloading
-                artifact.downloadProgress.progress = min(99, (total_downloaded / max(total_size, 1)) * 100)
-                artifact.downloadProgress.eta = self._calculate_eta(artifact.fileName, artifact.downloadProgress.progress)
-                self._report_status()
+              intra = chunk_downloaded / max(chunk_size, 1)
+              progress = min(99, (i + intra) / num_chunks * 100)
+              artifact.downloadProgress.status = custom.ModelManagerSP.DownloadStatus.downloading
+              artifact.downloadProgress.progress = progress
+              artifact.downloadProgress.eta = self._calculate_eta(artifact.fileName, progress)
+              self._sync_artifact_progress(artifact)
+              self._report_status()
 
     with open(manifest_path, 'w') as f:
       f.write(str(num_chunks))
+    if os.path.isfile(base_path):
+      os.remove(base_path)
     del self._download_start_times[artifact.fileName]
 
   async def _process_artifact(self, artifact, destination_path: str) -> None:
@@ -130,6 +144,7 @@ class ModelManagerSP:
         artifact.downloadProgress.status = custom.ModelManagerSP.DownloadStatus.cached
         artifact.downloadProgress.progress = 100
         artifact.downloadProgress.eta = 0
+        self._sync_artifact_progress(artifact)
         self._report_status()
         return
 
@@ -142,7 +157,9 @@ class ModelManagerSP:
         raise ValueError(f"Hash validation failed for {filename}")
 
       artifact.downloadProgress.status = custom.ModelManagerSP.DownloadStatus.downloaded
+      artifact.downloadProgress.progress = 100
       artifact.downloadProgress.eta = 0
+      self._sync_artifact_progress(artifact)
       self._report_status()
 
     except Exception as e:
@@ -152,6 +169,7 @@ class ModelManagerSP:
           os.remove(f)
       artifact.downloadProgress.status = custom.ModelManagerSP.DownloadStatus.failed
       artifact.downloadProgress.eta = 0
+      self._sync_artifact_progress(artifact)
       self.selected_bundle.status = custom.ModelManagerSP.DownloadStatus.failed
       self._report_status()
       self._download_start_times.pop(artifact.fileName, None)
@@ -185,8 +203,19 @@ class ModelManagerSP:
     os.makedirs(destination_path, exist_ok=True)
 
     try:
-      tasks = [self._process_model(model, destination_path) for model in self.selected_bundle.models]
-      await asyncio.gather(*tasks)
+      seen_artifacts: set[str] = set()
+      for model in self.selected_bundle.models:
+        for artifact in (model.metadata, model.artifact):
+          if not artifact.fileName:
+            continue
+          if artifact.fileName in seen_artifacts:
+            artifact.downloadProgress.status = custom.ModelManagerSP.DownloadStatus.cached
+            artifact.downloadProgress.progress = 100
+            artifact.downloadProgress.eta = 0
+          else:
+            seen_artifacts.add(artifact.fileName)
+            await self._process_artifact(artifact, destination_path)
+
       self.active_bundle = self.selected_bundle
       self.active_bundle.status = custom.ModelManagerSP.DownloadStatus.downloaded
       self.params.put("ModelManager_ActiveBundle", self.active_bundle.to_dict(), block=True)
