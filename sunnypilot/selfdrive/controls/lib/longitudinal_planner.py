@@ -19,12 +19,24 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolve
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
+from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_controller import AccelPersonalityController
 from openpilot.sunnypilot.selfdrive.controls.lib.radar_distance.radar_distance import RadarDistanceController
 from opendbc.car.interfaces import ACCEL_MIN
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+
+# output a_target rate limit: tight on accel/release for smooth launches and low-speed feel,
+# loose on brake-build so braking is never lagged.
+JERK_RELEASE = 2.5  # m/s^3, a_target rising
+JERK_BRAKE = 8.0    # m/s^3, a_target falling
+
+
+def rate_limit_a_target(prev: float, value: float) -> float:
+  if value > prev:
+    return min(value, prev + JERK_RELEASE * DT_MDL)
+  return max(value, prev - JERK_BRAKE * DT_MDL)
 
 # stop-hold: once stopped, hold the stop and suppress creep until a sustained go, so the
 # stop/go transition is smooth and never gas-brakes at standstill.
@@ -75,7 +87,7 @@ class LongitudinalPlannerSP:
   def output_a_target(self, value: float) -> None:
     value = float(value)
     if math.isfinite(value):
-      self._output_a_target = value
+      self._output_a_target = rate_limit_a_target(self._output_a_target, value)
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode

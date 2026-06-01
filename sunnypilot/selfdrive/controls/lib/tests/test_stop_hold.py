@@ -4,7 +4,28 @@ Copyright (c) 2021-, rav4kumar, Haibin Wen, sunnypilot, and a number of other co
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import apply_stop_hold, STOP_GO_FRAMES
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
+  apply_stop_hold,
+  STOP_GO_FRAMES,
+  rate_limit_a_target,
+  JERK_RELEASE,
+  JERK_BRAKE,
+)
+from openpilot.common.realtime import DT_MDL
+
+
+class TestRateLimitATarget:
+  def test_release_capped(self):
+    assert abs(rate_limit_a_target(0.0, 1.4) - JERK_RELEASE * DT_MDL) < 1e-9
+
+  def test_brake_capped(self):
+    assert abs(rate_limit_a_target(0.0, -3.5) - (-JERK_BRAKE * DT_MDL)) < 1e-9
+
+  def test_small_change_passthrough(self):
+    assert rate_limit_a_target(-1.0, -1.02) == -1.02
+
+  def test_brake_faster_than_release(self):
+    assert abs(rate_limit_a_target(0.0, -5.0)) > abs(rate_limit_a_target(0.0, 5.0))
 
 
 class TestStopHold:
