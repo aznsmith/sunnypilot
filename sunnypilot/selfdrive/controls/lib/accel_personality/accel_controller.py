@@ -5,12 +5,15 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+from typing import NamedTuple
+
 from cereal import custom
 import numpy as np
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
+from opendbc.car.interfaces import ACCEL_MIN
 
 AccelPersonality = custom.LongitudinalPlanSP.AccelerationPersonality
 ACCEL_PERSONALITY_OPTIONS = [AccelPersonality.eco, AccelPersonality.normal, AccelPersonality.sport]
@@ -20,6 +23,13 @@ A_MAX_V = {
   AccelPersonality.eco:    [1.40, 1.40, 1.30, 0.43, 0.08],
   AccelPersonality.normal: [1.80, 1.80, 1.45, 0.50, 0.15],
   AccelPersonality.sport:  [2.20, 2.20, 1.60, 0.70, 0.25],
+}
+
+A_MIN_BP = [0.0, 5.0, 15.0, 35.0]
+A_MIN_V = {
+  AccelPersonality.eco:    [-0.35, -0.50, -0.75, -1.00],
+  AccelPersonality.normal: [-0.45, -0.70, -1.00, -1.30],
+  AccelPersonality.sport:  [-0.60, -0.90, -1.30, -1.70],
 }
 
 RAMP_OFF_RANGE = 5.0
@@ -38,6 +48,30 @@ JERK_SCALE = {
 
 PARAM_REFRESH_FRAMES = max(1, int(1.0 / DT_MDL))
 
+LEAD_STOP_BUFFER = (2.0, 0.20, 6.0)  # base, speed gain, max
+LEAD_BRAKE_WEIGHT = 0.35
+LEAD_SAFETY_SCALE = 1.25
+LEAD_RELEASE_TTC = 3.0
+LEAD_CRITICAL = (1.25, 2.0, 0.75)  # ttc, lead brake, stock brake fraction
+LEAD_PREBRAKE = (0.45, 0.08, 5.0)  # closing, required decel, ttc
+LEAD_COMFORT = (0.8, 0.75)  # decel margin, t-follow scale
+
+LEAD_PREBRAKE_SCALE = {
+  AccelPersonality.eco:    0.55,
+  AccelPersonality.normal: 0.70,
+  AccelPersonality.sport:  0.90,
+}
+
+
+class LeadBrakeState(NamedTuple):
+  closing: float
+  critical: bool
+  headway: float
+  lead_brake: float
+  required_decel: float
+  score: float
+  ttc: float
+
 
 class AccelPersonalityController:
   def __init__(self):
@@ -54,7 +88,7 @@ class AccelPersonalityController:
       try:
         vc_kph = float(sm['carState'].vCruise)
         self._v_cruise = 0.0 if vc_kph >= V_CRUISE_MAX else vc_kph * CV.KPH_TO_MS
-      except Exception:
+      except (AttributeError, KeyError, TypeError, ValueError):
         pass
 
     if self.frame % PARAM_REFRESH_FRAMES == 0:
@@ -105,6 +139,108 @@ class AccelPersonalityController:
       return base
     ramp = float(np.clip((self._v_cruise - v_ego) / RAMP_OFF_RANGE, 0.0, 1.0))
     return base * ramp
+
+  def get_profile_min_accel(self, v_ego: float) -> float:
+    return float(np.interp(max(0.0, v_ego), A_MIN_BP, A_MIN_V[self._personality]))
+
+  @staticmethod
+  def _radarstate(sm):
+    if sm is None:
+      return None
+    try:
+      return sm['radarState']
+    except (KeyError, TypeError):
+      return None
+
+  def _lead_brake_state(self, lead, v_ego: float) -> LeadBrakeState | None:
+    if lead is None or not bool(getattr(lead, 'status', False)):
+      return None
+
+    d_rel = max(0.0, float(getattr(lead, 'dRel', 0.0)))
+    v_lead = max(0.0, float(getattr(lead, 'vLead', v_ego)))
+    v_rel = float(getattr(lead, 'vRel', v_lead - v_ego))
+    if abs(v_rel) < 1e-3 and abs(v_lead - v_ego) > 1e-3:
+      v_rel = v_lead - v_ego
+
+    closing = max(0.0, -v_rel)
+    lead_brake = max(0.0, -float(getattr(lead, 'aLeadK', 0.0)))
+    buffer_base, buffer_gain, buffer_max = LEAD_STOP_BUFFER
+    stop_buffer = float(np.clip(buffer_base + buffer_gain * max(0.0, v_ego), buffer_base, buffer_max))
+    usable_gap = max(0.25, d_rel - stop_buffer)
+    headway = d_rel / max(0.1, v_ego)
+    closing_load = closing + 0.4 * lead_brake
+    ttc = usable_gap / closing_load if closing_load > 0.1 else float('inf')
+    required_decel = closing * closing / (2.0 * usable_gap) + LEAD_BRAKE_WEIGHT * lead_brake
+    critical_ttc, hard_brake, stock_brake_fraction = LEAD_CRITICAL
+    critical = (getattr(lead, 'fcw', False) or lead_brake > hard_brake or
+                (ttc < critical_ttc and closing > 0.3) or required_decel > abs(ACCEL_MIN) * stock_brake_fraction)
+    inv_ttc = 1.0 / max(0.1, ttc) if np.isfinite(ttc) else 0.0
+
+    return LeadBrakeState(
+      closing=closing,
+      critical=critical,
+      headway=headway,
+      lead_brake=lead_brake,
+      required_decel=required_decel,
+      score=required_decel + 0.25 * lead_brake + inv_ttc,
+      ttc=ttc,
+    )
+
+  def _lead_brake_state_from_sm(self, sm, v_ego: float) -> LeadBrakeState | None:
+    radarstate = self._radarstate(sm)
+    if radarstate is None:
+      return None
+
+    states = []
+    for lead_name in ('leadOne', 'leadTwo'):
+      lead_state = self._lead_brake_state(getattr(radarstate, lead_name, None), v_ego)
+      if lead_state is not None:
+        states.append(lead_state)
+
+    return max(states, key=lambda s: s.score) if states else None
+
+  def get_min_accel(self, v_ego: float, sm=None, should_stop: bool = False, force_decel: bool = False) -> float:
+    if not self._enabled:
+      return ACCEL_MIN
+    if should_stop or force_decel:
+      return ACCEL_MIN
+
+    profile_min = self.get_profile_min_accel(v_ego)
+    lead_state = self._lead_brake_state_from_sm(sm, v_ego)
+    if lead_state is None:
+      return profile_min
+    if lead_state.critical:
+      return ACCEL_MIN
+
+    risk_min = float(np.clip(-lead_state.required_decel * LEAD_SAFETY_SCALE, ACCEL_MIN, 0.0))
+    if lead_state.required_decel <= 0.05 and lead_state.ttc > LEAD_RELEASE_TTC:
+      return profile_min
+    return min(profile_min, risk_min)
+
+  def shape_decel(self, v_ego: float, a_target: float, sm=None, should_stop: bool = False, force_decel: bool = False) -> float:
+    if not self._enabled or should_stop or force_decel:
+      return a_target
+
+    lead_state = self._lead_brake_state_from_sm(sm, v_ego)
+    if lead_state is None or lead_state.critical:
+      return a_target
+
+    shaped = float(a_target)
+    profile_min = self.get_profile_min_accel(v_ego)
+    comfort_decel_margin, comfort_headway_scale = LEAD_COMFORT
+    low_risk = (lead_state.ttc > LEAD_RELEASE_TTC and
+                lead_state.required_decel < abs(profile_min) * comfort_decel_margin and
+                lead_state.headway > self.get_t_follow() * comfort_headway_scale)
+    if low_risk and shaped < profile_min:
+      shaped = profile_min
+
+    prebrake_closing, prebrake_decel, prebrake_ttc = LEAD_PREBRAKE
+    if lead_state.closing > prebrake_closing and lead_state.required_decel > prebrake_decel and lead_state.ttc < prebrake_ttc:
+      dynamic_min = self.get_min_accel(v_ego, sm, should_stop, force_decel)
+      prebrake_target = max(dynamic_min, -lead_state.required_decel * LEAD_PREBRAKE_SCALE[self._personality])
+      shaped = min(shaped, prebrake_target)
+
+    return shaped
 
   def get_t_follow(self) -> float:
     return T_FOLLOW[self._personality]

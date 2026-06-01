@@ -8,16 +8,62 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_control
   AccelPersonalityController,
   AccelPersonality,
   A_MAX_V,
+  A_MIN_V,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+from opendbc.car.interfaces import ACCEL_MIN
 
 PERSONALITIES = (AccelPersonality.eco, AccelPersonality.normal, AccelPersonality.sport)
 
 
 def _make(personality, v_cruise=0.0):
   c = AccelPersonalityController()
-  c.set_accel_personality(personality)
+  c._personality = personality
+  c._enabled = True
   c._v_cruise = v_cruise
   return c
+
+
+class FakeLead:
+  def __init__(self, status=False, d_rel=0.0, v_rel=0.0, v_lead=0.0, a_lead=0.0, fcw=False):
+    self.status = status
+    self.dRel = d_rel
+    self.vRel = v_rel
+    self.vLead = v_lead
+    self.aLeadK = a_lead
+    self.fcw = fcw
+
+
+class FakeRadarState:
+  def __init__(self, lead_one=None, lead_two=None):
+    self.leadOne = lead_one or FakeLead()
+    self.leadTwo = lead_two or FakeLead()
+
+
+class FakeCarState:
+  def __init__(self, v_ego=0.0):
+    self.vEgo = v_ego
+
+
+class FakeControlsState:
+  def __init__(self, force_decel=False):
+    self.forceDecel = force_decel
+
+
+class FakeSM:
+  def __init__(self, radarstate, v_ego=0.0, force_decel=False):
+    self._data = {
+      'radarState': radarstate,
+      'carState': FakeCarState(v_ego),
+      'controlsState': FakeControlsState(force_decel),
+    }
+
+  def __getitem__(self, k):
+    return self._data[k]
+
+
+def _sm(lead_one=None, lead_two=None, v_ego=0.0, force_decel=False):
+  return FakeSM(FakeRadarState(lead_one, lead_two), v_ego, force_decel)
 
 
 class TestGasCeiling:
@@ -81,3 +127,76 @@ class TestPersonalityApi:
     c.set_enabled(False)
     assert c.toggle_enabled() is True
     assert c.toggle_enabled() is False
+
+
+class TestBrakeFloor:
+  def test_profile_brake_floor(self):
+    c = _make(AccelPersonality.normal)
+    assert abs(c.get_profile_min_accel(15.0) - A_MIN_V[AccelPersonality.normal][2]) < 1e-6
+
+  def test_eco_softest_sport_deepest(self):
+    eco = _make(AccelPersonality.eco)
+    normal = _make(AccelPersonality.normal)
+    sport = _make(AccelPersonality.sport)
+    for v in (0.0, 5.0, 15.0, 35.0):
+      assert eco.get_min_accel(v) > normal.get_min_accel(v) > sport.get_min_accel(v)
+
+  def test_disabled_uses_stock_floor(self):
+    c = _make(AccelPersonality.normal)
+    c.set_enabled(False)
+    assert c.get_min_accel(10.0) == ACCEL_MIN
+
+  def test_closing_lead_opens_more_brake(self):
+    c = _make(AccelPersonality.normal)
+    lead = FakeLead(status=True, d_rel=14.0, v_lead=7.0)
+    profile_min = c.get_profile_min_accel(14.0)
+    assert ACCEL_MIN <= c.get_min_accel(14.0, _sm(lead)) < profile_min
+
+  def test_critical_lead_uses_stock_floor(self):
+    c = _make(AccelPersonality.normal)
+    lead = FakeLead(status=True, d_rel=8.0, v_lead=1.0)
+    assert c.get_min_accel(16.0, _sm(lead)) == ACCEL_MIN
+
+  def test_stop_and_force_decel_use_stock_floor(self):
+    c = _make(AccelPersonality.normal)
+    assert c.get_min_accel(8.0, should_stop=True) == ACCEL_MIN
+    assert c.get_min_accel(8.0, force_decel=True) == ACCEL_MIN
+
+
+class TestBrakeShaping:
+  def test_low_risk_lead_caps_unnecessary_brake(self):
+    c = _make(AccelPersonality.eco)
+    lead = FakeLead(status=True, d_rel=45.0, v_lead=12.0)
+    shaped = c.shape_decel(12.0, -2.0, _sm(lead))
+    assert shaped == c.get_profile_min_accel(12.0)
+
+  def test_closing_lead_adds_early_brake(self):
+    c = _make(AccelPersonality.normal)
+    lead = FakeLead(status=True, d_rel=24.0, v_lead=10.0)
+    shaped = c.shape_decel(14.0, 0.1, _sm(lead))
+    assert shaped < 0.1
+    assert shaped >= c.get_min_accel(14.0, _sm(lead))
+
+  def test_disabled_shape_is_noop(self):
+    c = _make(AccelPersonality.normal)
+    c.set_enabled(False)
+    lead = FakeLead(status=True, d_rel=45.0, v_lead=12.0)
+    assert c.shape_decel(12.0, -2.0, _sm(lead)) == -2.0
+
+
+class TestPlannerBrakeHook:
+  def test_stop_not_raised_to_comfort_floor(self):
+    p = object.__new__(LongitudinalPlannerSP)
+    p.accel_controller = _make(AccelPersonality.eco)
+    p._last_plan_sm = _sm(FakeLead(status=True, d_rel=45.0, v_lead=12.0), v_ego=12.0)
+    p.output_should_stop = True
+
+    assert p._apply_accel_personality_decel(-2.0) == -2.0
+
+  def test_force_decel_not_raised_to_comfort_floor(self):
+    p = object.__new__(LongitudinalPlannerSP)
+    p.accel_controller = _make(AccelPersonality.eco)
+    p._last_plan_sm = _sm(FakeLead(status=True, d_rel=45.0, v_lead=12.0), v_ego=12.0, force_decel=True)
+    p.output_should_stop = False
+
+    assert p._apply_accel_personality_decel(-2.0) == -2.0

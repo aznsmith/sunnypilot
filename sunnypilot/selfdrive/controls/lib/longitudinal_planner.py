@@ -76,6 +76,7 @@ class LongitudinalPlannerSP:
 
     self.output_v_target = 0.
     self._output_a_target = 0.
+    self._last_plan_sm = None
     self._stop_held = False
     self._stop_go_count = 0
 
@@ -83,10 +84,29 @@ class LongitudinalPlannerSP:
   def output_a_target(self) -> float:
     return self._output_a_target
 
+  def _apply_accel_personality_decel(self, value: float) -> float:
+    if not self.accel_controller.is_enabled():
+      return value
+
+    sm = self._last_plan_sm
+    if sm is None:
+      return value
+
+    try:
+      v_ego = float(sm['carState'].vEgo)
+      force_decel = bool(sm['controlsState'].forceDecel)
+    except (AttributeError, KeyError, TypeError, ValueError):
+      return value
+
+    should_stop = bool(getattr(self, 'output_should_stop', False))
+    value = self.accel_controller.shape_decel(v_ego, value, sm, should_stop, force_decel)
+    return max(value, self.accel_controller.get_min_accel(v_ego, sm, should_stop, force_decel))
+
   @output_a_target.setter
   def output_a_target(self, value: float) -> None:
     value = float(value)
     if math.isfinite(value):
+      value = self._apply_accel_personality_decel(value)
       self._output_a_target = rate_limit_a_target(self._output_a_target, value)
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
@@ -150,6 +170,7 @@ class LongitudinalPlannerSP:
     return self.radar_distance.smooth_radarstate(radarstate)
 
   def update(self, sm: messaging.SubMaster) -> None:
+    self._last_plan_sm = sm
     self.events_sp.clear()
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
