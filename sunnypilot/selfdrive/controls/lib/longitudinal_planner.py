@@ -68,6 +68,18 @@ class LongitudinalPlannerSP:
       return [ACCEL_MIN, self.accel_controller.get_max_accel(v_ego)]
     return None
 
+  def get_t_follow(self) -> float | None:
+    # personality follow distance for the MPC; None -> stock get_T_FOLLOW(personality).
+    if self.accel_controller.is_enabled():
+      return self.accel_controller.get_t_follow()
+    return None
+
+  def get_jerk_scale(self) -> float:
+    # personality jerk-cost multiplier (softer ramp); 1.0 -> stock when controller off.
+    if self.accel_controller.is_enabled():
+      return self.accel_controller.get_jerk_scale()
+    return 1.0
+
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
     CS = sm['carState']
     v_cruise_cluster_kph = min(CS.vCruiseCluster, V_CRUISE_MAX)

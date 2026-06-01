@@ -47,6 +47,29 @@ class TestGasCeiling:
     assert 0.0 < c.get_max_accel(17.5) < full.get_max_accel(17.5)
 
 
+class TestFollowDistance:
+  def test_eco_loosest_sport_tightest(self):
+    eco = _make(AccelPersonality.eco)
+    normal = _make(AccelPersonality.normal)
+    sport = _make(AccelPersonality.sport)
+    assert eco.get_t_follow() > normal.get_t_follow() > sport.get_t_follow()
+
+  def test_values_sane(self):
+    for p in PERSONALITIES:
+      assert 1.0 <= _make(p).get_t_follow() <= 2.0
+
+
+class TestJerkScale:
+  def test_eco_smoother_sport_snappier(self):
+    eco = _make(AccelPersonality.eco)
+    normal = _make(AccelPersonality.normal)
+    sport = _make(AccelPersonality.sport)
+    assert eco.get_jerk_scale() > normal.get_jerk_scale() > sport.get_jerk_scale()
+
+  def test_normal_is_stock(self):
+    assert _make(AccelPersonality.normal).get_jerk_scale() == 1.0
+
+
 class TestPersonalityApi:
   def test_cycle(self):
     c = _make(AccelPersonality.eco)

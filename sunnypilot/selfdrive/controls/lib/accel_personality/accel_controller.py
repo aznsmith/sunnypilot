@@ -24,6 +24,24 @@ A_MAX_V = {
 }
 
 RAMP_OFF_RANGE = 5.0  # m/s below set speed over which max accel ramps to 0
+
+# Follow distance (t_follow, s) per personality. Kept close to stock so the steady gap is not
+# "too far"; eco only slightly looser. Never caps authority (MPC still brakes to ACCEL_MIN when
+# needed). Gentleness comes mostly from JERK_SCALE (a softer ramp at a normal gap), not distance.
+T_FOLLOW = {
+  AccelPersonality.eco:    1.55,
+  AccelPersonality.normal: 1.45,
+  AccelPersonality.sport:  1.30,
+}
+
+# Jerk-cost multiplier per personality. Higher -> the MPC penalizes rapid accel change more ->
+# softer/smoother brake ramp (gentle without a larger gap). Lower -> snappier/more responsive.
+JERK_SCALE = {
+  AccelPersonality.eco:    1.2,
+  AccelPersonality.normal: 1.0,
+  AccelPersonality.sport:  0.8,
+}
+
 PARAM_REFRESH_FRAMES = max(1, int(1.0 / DT_MDL))
 
 
@@ -97,3 +115,9 @@ class AccelPersonalityController:
       return base
     ramp = float(np.clip((self._v_cruise - v_ego) / RAMP_OFF_RANGE, 0.0, 1.0))
     return base * ramp
+
+  def get_t_follow(self) -> float:
+    return T_FOLLOW[self._personality]
+
+  def get_jerk_scale(self) -> float:
+    return JERK_SCALE[self._personality]

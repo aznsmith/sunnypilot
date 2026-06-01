@@ -136,10 +136,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if force_slow_decel:
       v_cruise = 0.0
 
-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
+    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality, jerk_scale=self.get_jerk_scale())
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     radarstate = self.smooth_radarstate(sm['radarState'])
-    self.mpc.update(radarstate, v_cruise, personality=sm['selfdriveState'].personality)
+    self.mpc.update(radarstate, v_cruise, personality=sm['selfdriveState'].personality, t_follow=self.get_t_follow())
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
