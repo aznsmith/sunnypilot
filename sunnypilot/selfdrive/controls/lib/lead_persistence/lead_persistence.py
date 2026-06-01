@@ -209,8 +209,7 @@ class LeadPersistence:
             and float(lead.modelProb) < _PHANTOM_MODELPROB_MAX
             and float(lead.dRel) < _PHANTOM_DREL_MAX):
       return False
-    # never mask an urgently-closing lead even at low modelProb: a real close cut-in can
-    # appear before the model confirms it. Mirrors the switch-slew urgent pass-through.
+    # don't mask an urgently-closing lead
     v_rel = float(lead.vRel)
     if v_rel <= _SWITCH_PASSTHROUGH_VREL:
       return False
@@ -248,13 +247,13 @@ class LeadPersistence:
   @staticmethod
   def _snap(lead) -> _LeadSnap:
     return _LeadSnap(
-      dRel=float(getattr(lead, 'dRel', 0.0)),
-      yRel=float(getattr(lead, 'yRel', 0.0)),
-      vRel=float(getattr(lead, 'vRel', 0.0)),
-      vLead=float(getattr(lead, 'vLead', 0.0)),
-      aLeadK=float(getattr(lead, 'aLeadK', 0.0)),
-      aLeadTau=float(getattr(lead, 'aLeadTau', 0.0)),
-      modelProb=float(getattr(lead, 'modelProb', 0.0)),
-      aRel=float(getattr(lead, 'aRel', 0.0)),
-      fcw=bool(getattr(lead, 'fcw', False)),
+      dRel=float(lead.dRel),
+      yRel=float(lead.yRel),
+      vRel=float(lead.vRel),
+      vLead=float(lead.vLead),
+      aLeadK=float(lead.aLeadK),
+      aLeadTau=float(lead.aLeadTau),
+      modelProb=float(lead.modelProb),
+      aRel=float(lead.aRel),
+      fcw=bool(lead.fcw),
     )

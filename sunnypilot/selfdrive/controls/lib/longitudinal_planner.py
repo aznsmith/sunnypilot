@@ -50,7 +50,6 @@ class LongitudinalPlannerSP:
 
   @output_a_target.setter
   def output_a_target(self, value: float) -> None:
-    # guard against a NaN/inf accel poisoning the control loop; otherwise pass through.
     value = float(value)
     if math.isfinite(value):
       self._output_a_target = value
@@ -63,19 +62,16 @@ class LongitudinalPlannerSP:
     return experimental_mode and self.dec.mode() == "blended"
 
   def get_accel_clip(self, v_ego: float) -> list[float] | None:
-    # personality gas ceiling; braking stays at the stock ACCEL_MIN floor.
     if self.accel_controller.is_enabled():
       return [ACCEL_MIN, self.accel_controller.get_max_accel(v_ego)]
     return None
 
   def get_t_follow(self) -> float | None:
-    # personality follow distance for the MPC; None -> stock get_T_FOLLOW(personality).
     if self.accel_controller.is_enabled():
       return self.accel_controller.get_t_follow()
     return None
 
   def get_jerk_scale(self) -> float:
-    # personality jerk-cost multiplier (softer ramp); 1.0 -> stock when controller off.
     if self.accel_controller.is_enabled():
       return self.accel_controller.get_jerk_scale()
     return 1.0

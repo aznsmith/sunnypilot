@@ -15,7 +15,6 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 AccelPersonality = custom.LongitudinalPlanSP.AccelerationPersonality
 ACCEL_PERSONALITY_OPTIONS = [AccelPersonality.eco, AccelPersonality.normal, AccelPersonality.sport]
 
-# Gas ceiling (MPC accel-max) per personality, by v_ego. Ramps off approaching set speed.
 A_MAX_BP = [0.0, 4.0, 8.0, 16.0, 40.0]
 A_MAX_V = {
   AccelPersonality.eco:    [1.40, 1.40, 1.30, 0.43, 0.08],
@@ -23,19 +22,14 @@ A_MAX_V = {
   AccelPersonality.sport:  [2.20, 2.20, 1.60, 0.70, 0.25],
 }
 
-RAMP_OFF_RANGE = 5.0  # m/s below set speed over which max accel ramps to 0
+RAMP_OFF_RANGE = 5.0
 
-# Follow distance (t_follow, s) per personality. Kept close to stock so the steady gap is not
-# "too far"; eco only slightly looser. Never caps authority (MPC still brakes to ACCEL_MIN when
-# needed). Gentleness comes mostly from JERK_SCALE (a softer ramp at a normal gap), not distance.
 T_FOLLOW = {
   AccelPersonality.eco:    1.55,
   AccelPersonality.normal: 1.45,
   AccelPersonality.sport:  1.30,
 }
 
-# Jerk-cost multiplier per personality. Higher -> the MPC penalizes rapid accel change more ->
-# softer/smoother brake ramp (gentle without a larger gap). Lower -> snappier/more responsive.
 JERK_SCALE = {
   AccelPersonality.eco:    1.2,
   AccelPersonality.normal: 1.0,
@@ -46,9 +40,6 @@ PARAM_REFRESH_FRAMES = max(1, int(1.0 / DT_MDL))
 
 
 class AccelPersonalityController:
-  """Personality gas ceiling for the longitudinal planner. Only shapes acceleration
-  (the MPC accel-max via the planner's accel clip); braking is left at the stock floor."""
-
   def __init__(self):
     self.params = Params()
     self.frame = 0
@@ -61,7 +52,6 @@ class AccelPersonalityController:
     self.frame += 1
     if sm is not None:
       try:
-        # >= V_CRUISE_MAX means cruise unset (255) -> no setpoint
         vc_kph = float(sm['carState'].vCruise)
         self._v_cruise = 0.0 if vc_kph >= V_CRUISE_MAX else vc_kph * CV.KPH_TO_MS
       except Exception:
