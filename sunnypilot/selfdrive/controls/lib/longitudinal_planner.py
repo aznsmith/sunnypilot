@@ -60,6 +60,19 @@ def apply_stop_hold(held: bool, go_count: int, v_ego: float, a_target: float, sh
   return a_target, should_stop, held, go_count
 
 
+class _SmoothedLeadSM:
+  # presents the lead-persistence-smoothed radarState to the accel controller while delegating
+  # every other service to the real SubMaster, so brake shaping sees the same lead as the MPC.
+  __slots__ = ('_sm', '_radarstate')
+
+  def __init__(self, sm, radarstate):
+    self._sm = sm
+    self._radarstate = radarstate
+
+  def __getitem__(self, key):
+    return self._radarstate if key == 'radarState' else self._sm[key]
+
+
 class LongitudinalPlannerSP:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
     self.events_sp = EventsSP()
@@ -77,6 +90,7 @@ class LongitudinalPlannerSP:
     self.output_v_target = 0.
     self._output_a_target = 0.
     self._last_plan_sm = None
+    self._smoothed_radarstate = None
     self._stop_held = False
     self._stop_go_count = 0
 
@@ -91,6 +105,8 @@ class LongitudinalPlannerSP:
     sm = self._last_plan_sm
     if sm is None:
       return value
+    if self._smoothed_radarstate is not None:
+      sm = _SmoothedLeadSM(sm, self._smoothed_radarstate)
 
     try:
       v_ego = float(sm['carState'].vEgo)
@@ -98,7 +114,7 @@ class LongitudinalPlannerSP:
     except (AttributeError, KeyError, TypeError, ValueError):
       return value
 
-    should_stop = bool(getattr(self, 'output_should_stop', False))
+    should_stop = bool(self.output_should_stop)
     value = self.accel_controller.shape_decel(v_ego, value, sm, should_stop, force_decel)
     return max(value, self.accel_controller.get_min_accel(v_ego, sm, should_stop, force_decel))
 
@@ -167,7 +183,8 @@ class LongitudinalPlannerSP:
     return self.output_v_target, a_target
 
   def smooth_radarstate(self, radarstate):
-    return self.radar_distance.smooth_radarstate(radarstate)
+    self._smoothed_radarstate = self.radar_distance.smooth_radarstate(radarstate)
+    return self._smoothed_radarstate
 
   def update(self, sm: messaging.SubMaster) -> None:
     self._last_plan_sm = sm

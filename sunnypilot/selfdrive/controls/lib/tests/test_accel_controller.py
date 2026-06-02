@@ -189,6 +189,7 @@ class TestPlannerBrakeHook:
     p = object.__new__(LongitudinalPlannerSP)
     p.accel_controller = _make(AccelPersonality.eco)
     p._last_plan_sm = _sm(FakeLead(status=True, d_rel=45.0, v_lead=12.0), v_ego=12.0)
+    p._smoothed_radarstate = None
     p.output_should_stop = True
 
     assert p._apply_accel_personality_decel(-2.0) == -2.0
@@ -197,6 +198,7 @@ class TestPlannerBrakeHook:
     p = object.__new__(LongitudinalPlannerSP)
     p.accel_controller = _make(AccelPersonality.eco)
     p._last_plan_sm = _sm(FakeLead(status=True, d_rel=45.0, v_lead=12.0), v_ego=12.0, force_decel=True)
+    p._smoothed_radarstate = None
     p.output_should_stop = False
 
     assert p._apply_accel_personality_decel(-2.0) == -2.0
