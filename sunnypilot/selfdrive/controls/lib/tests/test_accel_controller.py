@@ -66,6 +66,10 @@ def _sm(lead_one=None, lead_two=None, v_ego=0.0, force_decel=False):
   return FakeSM(FakeRadarState(lead_one, lead_two), v_ego, force_decel)
 
 
+def _rs(lead_one=None, lead_two=None):
+  return FakeRadarState(lead_one, lead_two)
+
+
 class TestGasCeiling:
   def test_positive(self):
     c = _make(AccelPersonality.normal)
@@ -150,12 +154,12 @@ class TestBrakeFloor:
     c = _make(AccelPersonality.normal)
     lead = FakeLead(status=True, d_rel=14.0, v_lead=7.0)
     profile_min = c.get_profile_min_accel(14.0)
-    assert ACCEL_MIN <= c.get_min_accel(14.0, _sm(lead)) < profile_min
+    assert ACCEL_MIN <= c.get_min_accel(14.0, _rs(lead)) < profile_min
 
   def test_critical_lead_uses_stock_floor(self):
     c = _make(AccelPersonality.normal)
     lead = FakeLead(status=True, d_rel=8.0, v_lead=1.0)
-    assert c.get_min_accel(16.0, _sm(lead)) == ACCEL_MIN
+    assert c.get_min_accel(16.0, _rs(lead)) == ACCEL_MIN
 
   def test_stop_and_force_decel_use_stock_floor(self):
     c = _make(AccelPersonality.normal)
@@ -167,21 +171,21 @@ class TestBrakeShaping:
   def test_low_risk_lead_caps_unnecessary_brake(self):
     c = _make(AccelPersonality.eco)
     lead = FakeLead(status=True, d_rel=45.0, v_lead=12.0)
-    shaped = c.shape_decel(12.0, -2.0, _sm(lead))
+    shaped = c.shape_decel(12.0, -2.0, _rs(lead))
     assert shaped == c.get_profile_min_accel(12.0)
 
   def test_closing_lead_adds_early_brake(self):
     c = _make(AccelPersonality.normal)
     lead = FakeLead(status=True, d_rel=24.0, v_lead=10.0)
-    shaped = c.shape_decel(14.0, 0.1, _sm(lead))
+    shaped = c.shape_decel(14.0, 0.1, _rs(lead))
     assert shaped < 0.1
-    assert shaped >= c.get_min_accel(14.0, _sm(lead))
+    assert shaped >= c.get_min_accel(14.0, _rs(lead))
 
   def test_disabled_shape_is_noop(self):
     c = _make(AccelPersonality.normal)
     c.set_enabled(False)
     lead = FakeLead(status=True, d_rel=45.0, v_lead=12.0)
-    assert c.shape_decel(12.0, -2.0, _sm(lead)) == -2.0
+    assert c.shape_decel(12.0, -2.0, _rs(lead)) == -2.0
 
 
 class TestPlannerBrakeHook:

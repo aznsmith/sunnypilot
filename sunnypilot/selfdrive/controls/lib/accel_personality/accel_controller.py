@@ -150,15 +150,6 @@ class AccelPersonalityController:
   def get_profile_min_accel(self, v_ego: float) -> float:
     return float(np.interp(max(0.0, v_ego), A_MIN_BP, A_MIN_V[self._personality]))
 
-  @staticmethod
-  def _radarstate(sm):
-    if sm is None:
-      return None
-    try:
-      return sm['radarState']
-    except (KeyError, TypeError):
-      return None
-
   def _lead_brake_state(self, lead, v_ego: float) -> LeadBrakeState | None:
     if lead is None or not bool(lead.status):
       return None
@@ -192,23 +183,21 @@ class AccelPersonalityController:
       ttc=ttc,
     )
 
-  def _lead_brake_state_from_sm(self, sm, v_ego: float) -> LeadBrakeState | None:
-    radarstate = self._radarstate(sm)
+  def _best_lead_brake_state(self, radarstate, v_ego: float) -> LeadBrakeState | None:
     if radarstate is None:
       return None
-
     states = [s for s in (self._lead_brake_state(radarstate.leadOne, v_ego),
                           self._lead_brake_state(radarstate.leadTwo, v_ego)) if s is not None]
     return max(states, key=lambda s: s.score) if states else None
 
-  def get_min_accel(self, v_ego: float, sm=None, should_stop: bool = False, force_decel: bool = False) -> float:
+  def get_min_accel(self, v_ego: float, radarstate=None, should_stop: bool = False, force_decel: bool = False) -> float:
     if not self._enabled:
       return ACCEL_MIN
     if should_stop or force_decel:
       return ACCEL_MIN
 
     profile_min = self.get_profile_min_accel(v_ego)
-    lead_state = self._lead_brake_state_from_sm(sm, v_ego)
+    lead_state = self._best_lead_brake_state(radarstate, v_ego)
     if lead_state is None:
       return profile_min
     if lead_state.critical:
@@ -219,11 +208,11 @@ class AccelPersonalityController:
       return profile_min
     return min(profile_min, risk_min)
 
-  def shape_decel(self, v_ego: float, a_target: float, sm=None, should_stop: bool = False, force_decel: bool = False) -> float:
+  def shape_decel(self, v_ego: float, a_target: float, radarstate=None, should_stop: bool = False, force_decel: bool = False) -> float:
     if not self._enabled or should_stop or force_decel:
       return a_target
 
-    lead_state = self._lead_brake_state_from_sm(sm, v_ego)
+    lead_state = self._best_lead_brake_state(radarstate, v_ego)
     if lead_state is None or lead_state.critical:
       return a_target
 
@@ -236,7 +225,7 @@ class AccelPersonalityController:
       shaped = profile_min
 
     if lead_state.closing > LEAD_PREBRAKE_CLOSING and lead_state.required_decel > LEAD_PREBRAKE_DECEL and lead_state.ttc < LEAD_PREBRAKE_TTC:
-      dynamic_min = self.get_min_accel(v_ego, sm, should_stop, force_decel)
+      dynamic_min = self.get_min_accel(v_ego, radarstate, should_stop, force_decel)
       prebrake_target = max(dynamic_min, -lead_state.required_decel * LEAD_PREBRAKE_SCALE[self._personality])
       shaped = min(shaped, prebrake_target)
 
