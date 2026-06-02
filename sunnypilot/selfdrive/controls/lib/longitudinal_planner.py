@@ -188,6 +188,7 @@ class LongitudinalPlannerSP:
 
   def update(self, sm: messaging.SubMaster) -> None:
     self._last_plan_sm = sm
+    self._smoothed_radarstate = None
     self.events_sp.clear()
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
