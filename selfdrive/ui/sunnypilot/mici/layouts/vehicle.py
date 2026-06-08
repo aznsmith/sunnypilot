@@ -9,7 +9,6 @@ from collections.abc import Callable
 
 from openpilot.selfdrive.ui.mici.widgets.button import BigToggle
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets.scroller import NavScroller
 
@@ -57,18 +56,11 @@ class VehicleLayoutMici(NavScroller):
 
     self._ti_toggle = BigDirectParamToggle(
       tr("torque interceptor (mici)"),
-      "MazdaTorqueInterceptorEnabled",
-      toggle_callback=self._on_ti_toggle,
+      "TorqueInterceptorEnabled",
     )
     self._ti_toggle.set_enabled(lambda: not ui_state.engaged)
 
     self._scroller.add_widgets([self._ti_toggle])
-
-  def _on_ti_toggle(self, state: bool):
-    try:
-      ui_state.params.put_bool("OnroadCycleRequested", True)
-    except Exception:
-      _write_param_bool("OnroadCycleRequested", True)
 
   def show_event(self):
     super().show_event()

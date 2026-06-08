@@ -26,10 +26,13 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
   # Mazda actually does not set any bit when requesting torque
   NO_STEER_REQ_BIT = True
 
+  # mazda.h now requires a generation flag; GEN1 = 1
+  FLAG_GEN1 = 1
+
   def setUp(self):
     self.packer = CANPackerSafety("mazda_2017")
     self.safety = libsafety_py.libsafety
-    self.safety.set_safety_hooks(CarParams.SafetyModel.mazda, 0)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.mazda, self.FLAG_GEN1)
     self.safety.init_tests()
 
   def _torque_meas_msg(self, torque):
