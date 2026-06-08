@@ -136,16 +136,13 @@ def initialize_params(params) -> list[dict[str, Any]]:
 
   result = [{k: params.get(k, return_default=True)} for k in keys]
 
-  # mazda — read directly from filesystem to support prebuilt binaries compiled before
-  # MazdaTorqueInterceptorEnabled was added to params_keys.h
+  # mazda — read directly from filesystem; TorqueInterceptorEnabled is unregistered in
+  # params_keys.h so the prebuilt params binary will raise UnknownKeyName
   import os
   try:
-    result.append({'MazdaTorqueInterceptorEnabled': params.get('MazdaTorqueInterceptorEnabled', return_default=True)})
+    _p = '/data/params/d/TorqueInterceptorEnabled'
+    result.append({'TorqueInterceptorEnabled': open(_p).read().strip() if os.path.exists(_p) else '0'})
   except Exception:
-    try:
-      _p = '/data/params/d/MazdaTorqueInterceptorEnabled'
-      result.append({'MazdaTorqueInterceptorEnabled': open(_p).read().strip() if os.path.exists(_p) else '0'})
-    except Exception:
-      result.append({'MazdaTorqueInterceptorEnabled': None})
+    result.append({'TorqueInterceptorEnabled': '0'})
 
   return result
