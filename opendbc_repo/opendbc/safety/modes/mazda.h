@@ -210,6 +210,13 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
       tx = false;
     }
   }
+  if (gen1 && torque_interceptor && (msg->bus == MAZDA_AUX) && (msg->addr == MAZDA_TI_LKAS)) {
+    // CAM_LKAS2 LKAS_REQUEST : 3|12@0+ (1,-2048) — unsigned 12-bit with -2048 offset
+    int desired_torque = (int)(((msg->data[0] & 0x0FU) << 8U) | msg->data[1]) - 2048;
+    if (steer_torque_cmd_checks(desired_torque, -1, MAZDA_STEERING_LIMITS)) {
+      tx = false;
+    }
+  }
 
   return tx;
 }
@@ -256,7 +263,7 @@ static safety_config mazda_init(uint16_t param) {
     {.msg = {{MAZDA_2023_BRAKE,         0, 8, 5U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MAZDA_2019_GAS,           2, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MAZDA_2019_CRUISE,        1, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    {.msg = {{MAZDA_2023_SPEED,         2, 8, 30U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_2023_SPEED,         0, 8, 30U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MAZDA_2019_STEER_TORQUE,  1, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
 };
 

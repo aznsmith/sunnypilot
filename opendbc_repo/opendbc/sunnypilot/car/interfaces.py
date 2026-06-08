@@ -151,10 +151,11 @@ def _initialize_toyota(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params
 
 
 def _initialize_mazda(CP: structs.CarParams, params_dict: dict[str, str]) -> None:
-  if CP.brand == 'mazda':
+  if CP.brand == 'mazda' and (CP.flags & MazdaSafetyFlags.GEN1.value):
     ti_enabled = int(params_dict.get("MazdaTorqueInterceptorEnabled", 0)) == 1
     if ti_enabled:
       CP.flags |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
       CP.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
       CP.dashcamOnly = False
       CP.minSteerSpeed = 0.0
+      CP.steerAtStandstill = True

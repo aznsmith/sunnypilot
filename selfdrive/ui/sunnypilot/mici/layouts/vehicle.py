@@ -64,4 +64,6 @@ class VehicleLayoutMici(NavScroller):
 
   def show_event(self):
     super().show_event()
+    is_mazda = ui_state.CP is not None and ui_state.CP.brand == 'mazda'
+    self._ti_toggle.set_visible(is_mazda)
     self._ti_toggle.refresh()

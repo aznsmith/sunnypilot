@@ -161,8 +161,6 @@ class CarInterface(CarInterfaceBase):
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.GEN3.value
       ret.alphaLongitudinalAvailable = False
       ret.openpilotLongitudinalControl = False
-      if p.get_bool("ManualTransmission"):
-        ret.flags |= MazdaSafetyFlags.MANUAL_TRANSMISSION.value
     return ret
 
   @staticmethod

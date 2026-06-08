@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from opendbc.can import CANPacker
 from opendbc.car import Bus, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits
@@ -44,6 +46,14 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.brake_counter = 0
     self.ccp = CarControllerParams(CP)
+    self._ti_limits = SimpleNamespace(
+      STEER_MAX=self.ccp.TI_STEER_MAX,
+      STEER_DELTA_UP=self.ccp.TI_STEER_DELTA_UP,
+      STEER_DELTA_DOWN=self.ccp.TI_STEER_DELTA_DOWN,
+      STEER_DRIVER_ALLOWANCE=self.ccp.TI_STEER_DRIVER_ALLOWANCE,
+      STEER_DRIVER_MULTIPLIER=self.ccp.TI_STEER_DRIVER_MULTIPLIER,
+      STEER_DRIVER_FACTOR=self.ccp.TI_STEER_DRIVER_FACTOR,
+    ) if CP.flags & MazdaSafetyFlags.GEN1 else None
     self.hold_timer = Timer(6.0)
     self.hold_delay = Timer(.5)
     self.resume_timer = Timer(0.5)
@@ -61,10 +71,10 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
                                                       CS.out.steeringTorque, self.ccp)
       if self.CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR:
-        if CS.ti_lkas_allowed:
-          ti_new_torque = int(round(CC.actuators.torque * self.ccp.STEER_MAX))
-          ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.apply_torque_last,
-                                                    CS.out.steeringTorque, self.ccp)
+        if CS.ti_lkas_allowed and self._ti_limits is not None:
+          ti_new_torque = int(round(CC.actuators.torque * self.ccp.TI_STEER_MAX))
+          ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.ti_apply_torque_last,
+                                                    CS.out.steeringTorque, self._ti_limits)
 
     self.apply_torque_last = apply_torque
     self.ti_apply_torque_last = ti_apply_torque
