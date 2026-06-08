@@ -1,12 +1,30 @@
+import os
 from cereal import log
 
 from openpilot.system.ui.widgets.scroller import NavScroller
-from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl, BigMultiParamToggle
+from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl, BigMultiParamToggle, BigToggle
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
+
+_TI_PARAM_PATH = '/data/params/d/TorqueInterceptorEnabled'
+
+
+def _read_ti_state() -> bool:
+  try:
+    return os.path.exists(_TI_PARAM_PATH) and open(_TI_PARAM_PATH).read().strip() == '1'
+  except Exception:
+    return False
+
+
+def _on_ti_toggle(state: bool) -> None:
+  try:
+    with open(_TI_PARAM_PATH, 'w') as f:
+      f.write('1' if state else '0')
+  except Exception:
+    pass
 
 
 class TogglesLayoutMici(NavScroller):
@@ -21,6 +39,7 @@ class TogglesLayoutMici(NavScroller):
     record_front = BigParamControl("record & upload driver camera", "RecordFront", toggle_callback=restart_needed_callback)
     record_mic = BigParamControl("record & upload mic audio", "RecordAudio", toggle_callback=restart_needed_callback)
     enable_openpilot = BigParamControl("enable sunnypilot", "OpenpilotEnabledToggle", toggle_callback=restart_needed_callback)
+    self._ti_toggle = BigToggle("torque interceptor", initial_state=_read_ti_state(), toggle_callback=_on_ti_toggle)
 
     self._scroller.add_widgets([
       self._personality_toggle,
@@ -31,6 +50,7 @@ class TogglesLayoutMici(NavScroller):
       record_front,
       record_mic,
       enable_openpilot,
+      self._ti_toggle,
     ])
 
     # Toggle lists
@@ -47,6 +67,8 @@ class TogglesLayoutMici(NavScroller):
     enable_openpilot.set_enabled(lambda: not ui_state.engaged)
     record_front.set_enabled(False if ui_state.params.get_bool("RecordFrontLock") else (lambda: not ui_state.engaged))
     record_mic.set_enabled(lambda: not ui_state.engaged)
+    self._ti_toggle.set_enabled(lambda: not ui_state.engaged)
+    self._ti_toggle.set_visible(False)
 
     if ui_state.params.get_bool("ShowDebugInfo"):
       gui_app.set_show_touches(True)
@@ -81,6 +103,14 @@ class TogglesLayoutMici(NavScroller):
         self._experimental_btn.set_checked(False)
         self._personality_toggle.set_visible(False)
         ui_state.params.remove("ExperimentalMode")
+
+      # Show TI toggle only for Mazda vehicles
+      is_mazda = ui_state.CP.brand == 'mazda'
+      self._ti_toggle.set_visible(is_mazda)
+      if is_mazda:
+        self._ti_toggle.set_checked(_read_ti_state())
+    else:
+      self._ti_toggle.set_visible(False)
 
     # Refresh toggles from params to mirror external changes
     for key, item in self._refresh_toggles:
