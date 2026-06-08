@@ -12,7 +12,7 @@ from collections.abc import Callable
 from opendbc.car import structs
 from opendbc.car.can_definitions import CanRecvCallable, CanSendCallable
 from opendbc.car.hyundai.values import HyundaiFlags
-from opendbc.car.mazda.values import MazdaFlags
+from opendbc.car.mazda.values import MazdaSafetyFlags
 from opendbc.car.subaru.values import SubaruFlags
 from opendbc.car.toyota.values import ToyotaSafetyFlags
 from opendbc.sunnypilot.car.hyundai.enable_radar_tracks import enable_radar_tracks as hyundai_enable_radar_tracks
@@ -152,9 +152,9 @@ def _initialize_toyota(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params
 
 def _initialize_mazda(CP: structs.CarParams, params_dict: dict[str, str]) -> None:
   if CP.brand == 'mazda':
-    ti_enabled = int(params_dict.get("MazdaTorqueInterceptorEnabled", 0)) == 1
+    ti_enabled = int(params_dict.get("TorqueInterceptorEnabled", 0)) == 1
     if ti_enabled:
-      CP.flags |= MazdaFlags.TORQUE_INTERCEPTOR.value
-      CP.safetyConfigs[0].safetyParam |= MazdaFlags.TORQUE_INTERCEPTOR.value
+      CP.flags |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
+      CP.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
       CP.dashcamOnly = False
       CP.minSteerSpeed = 0.0
