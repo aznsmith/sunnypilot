@@ -134,15 +134,9 @@ def initialize_params(params) -> list[dict[str, Any]]:
     "ToyotaStopAndGoHack",
   ])
 
-  result = [{k: params.get(k, return_default=True)} for k in keys]
+  # mazda
+  keys.extend([
+    "MazdaTorqueInterceptorEnabled",
+  ])
 
-  # mazda — read directly from filesystem; TorqueInterceptorEnabled is unregistered in
-  # params_keys.h so the prebuilt params binary will raise UnknownKeyName
-  import os
-  try:
-    _p = '/data/params/d/TorqueInterceptorEnabled'
-    result.append({'TorqueInterceptorEnabled': open(_p).read().strip() if os.path.exists(_p) else '0'})
-  except Exception:
-    result.append({'TorqueInterceptorEnabled': '0'})
-
-  return result
+  return [{k: params.get(k, return_default=True)} for k in keys]

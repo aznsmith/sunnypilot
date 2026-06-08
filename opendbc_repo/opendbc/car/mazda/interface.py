@@ -116,7 +116,7 @@ class CarInterface(CarInterfaceBase):
 
     if candidate in GEN1:
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.GEN1.value
-      if p.get_bool("TorqueInterceptorEnabled"): # Torque Interceptor Installed
+      if p.get_bool("MazdaTorqueInterceptorEnabled"): # Torque Interceptor Installed
         ret.flags |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
         ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
         ret.minSteerSpeed = 0.0

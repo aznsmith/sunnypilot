@@ -9,7 +9,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
-_TI_PARAM_PATH = '/data/params/d/TorqueInterceptorEnabled'
+_TI_PARAM_PATH = '/data/params/d/MazdaTorqueInterceptorEnabled'
 
 
 def _read_ti_state() -> bool:

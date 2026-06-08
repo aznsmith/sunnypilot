@@ -12,7 +12,7 @@ from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp
 
 _PARAMS_DIR = '/data/params/d'
-_TI_PARAM = 'TorqueInterceptorEnabled'
+_TI_PARAM = 'MazdaTorqueInterceptorEnabled'
 
 
 def _get_ti_enabled() -> bool:

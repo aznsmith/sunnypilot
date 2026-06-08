@@ -56,7 +56,7 @@ class VehicleLayoutMici(NavScroller):
 
     self._ti_toggle = BigDirectParamToggle(
       tr("torque interceptor (mici)"),
-      "TorqueInterceptorEnabled",
+      "MazdaTorqueInterceptorEnabled",
     )
     self._ti_toggle.set_enabled(lambda: not ui_state.engaged)
 
