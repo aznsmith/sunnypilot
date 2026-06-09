@@ -109,6 +109,23 @@ def setup_interfaces(CI: CarInterfaceBase, params: Params = None) -> None:
   # STATSLOGSP.raw('sunnypilot_params.car_params_sp', CP_SP.to_dict()) # https://github.com/sunnypilot/opendbc/pull/361
 
 
+def _read_sp_param_bool(key: str) -> bool:
+  """Read a param not registered in the prebuilt params_pyx.so binary.
+
+  Falls back to /data/params_sp/ (persistent, not wiped by clearAll) then
+  /data/params/d/ (migration compat). Returns False if neither file exists.
+  """
+  import os as _os
+  for base in ('/data/params_sp', '/data/params/d'):
+    try:
+      path = _os.path.join(base, key)
+      if _os.path.exists(path):
+        return open(path).read().strip() == '1'
+    except Exception:
+      pass
+  return False
+
+
 def initialize_params(params) -> list[dict[str, Any]]:
   keys: list = []
 
@@ -134,9 +151,14 @@ def initialize_params(params) -> list[dict[str, Any]]:
     "ToyotaStopAndGoHack",
   ])
 
-  # mazda
-  keys.extend([
-    "MazdaTorqueInterceptorEnabled",
-  ])
+  # Keys registered in the prebuilt binary
+  registered_keys = keys[:]
 
-  return [{k: params.get(k, return_default=True)} for k in keys]
+  # Mazda params are NOT in the prebuilt params_pyx.so — read via filesystem fallback
+  sp_keys = [
+    "MazdaTorqueInterceptorEnabled",
+  ]
+
+  result = [{k: params.get(k, return_default=True)} for k in registered_keys]
+  result += [{k: _read_sp_param_bool(k)} for k in sp_keys]
+  return result

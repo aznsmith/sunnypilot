@@ -11,11 +11,14 @@ from opendbc.car.mazda.values import CAR, LKAS_LIMITS, MazdaSafetyFlags, GEN1, G
 import os as _os
 
 def _params_file_get_bool(key: str) -> bool:
-  try:
-    p = f'/data/params/d/{key}'
-    return _os.path.exists(p) and open(p).read().strip() == '1'
-  except Exception:
-    return False
+  for base in ('/data/params_sp', '/data/params/d'):
+    try:
+      p = f'{base}/{key}'
+      if _os.path.exists(p):
+        return open(p).read().strip() == '1'
+    except Exception:
+      pass
+  return False
 
 try:
   from openpilot.common.params import Params as _RealParams

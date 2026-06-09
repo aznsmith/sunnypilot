@@ -11,30 +11,30 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp
 
+_SP_PARAMS_DIR = '/data/params_sp'
 _PARAMS_DIR = '/data/params/d'
 _TI_PARAM = 'MazdaTorqueInterceptorEnabled'
 
 
 def _get_ti_enabled() -> bool:
-  try:
-    return ui_state.params.get_bool(_TI_PARAM)
-  except Exception:
+  # Check params_sp first (persistent), then legacy params/d (migration)
+  for base in (_SP_PARAMS_DIR, _PARAMS_DIR):
     try:
-      p = os.path.join(_PARAMS_DIR, _TI_PARAM)
-      return os.path.exists(p) and open(p).read().strip() == '1'
+      p = os.path.join(base, _TI_PARAM)
+      if os.path.exists(p):
+        return open(p).read().strip() == '1'
     except Exception:
-      return False
+      pass
+  return False
 
 
 def _set_ti_enabled(value: bool) -> None:
   try:
-    ui_state.params.put_bool(_TI_PARAM, value)
+    os.makedirs(_SP_PARAMS_DIR, exist_ok=True)
+    with open(os.path.join(_SP_PARAMS_DIR, _TI_PARAM), 'w') as f:
+      f.write('1' if value else '0')
   except Exception:
-    try:
-      with open(os.path.join(_PARAMS_DIR, _TI_PARAM), 'w') as f:
-        f.write('1' if value else '0')
-    except Exception:
-      pass
+    pass
 
 
 DESCRIPTIONS = {

@@ -12,20 +12,25 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets.scroller import NavScroller
 
+_SP_PARAMS_DIR = '/data/params_sp'
 _PARAMS_DIR = '/data/params/d'
 
 
 def _read_param_bool(key: str) -> bool:
-  try:
-    path = os.path.join(_PARAMS_DIR, key)
-    return os.path.exists(path) and open(path).read().strip() == '1'
-  except Exception:
-    return False
+  for base in (_SP_PARAMS_DIR, _PARAMS_DIR):
+    try:
+      path = os.path.join(base, key)
+      if os.path.exists(path):
+        return open(path).read().strip() == '1'
+    except Exception:
+      pass
+  return False
 
 
 def _write_param_bool(key: str, value: bool):
   try:
-    with open(os.path.join(_PARAMS_DIR, key), 'w') as f:
+    os.makedirs(_SP_PARAMS_DIR, exist_ok=True)
+    with open(os.path.join(_SP_PARAMS_DIR, key), 'w') as f:
       f.write('1' if value else '0')
   except Exception:
     pass

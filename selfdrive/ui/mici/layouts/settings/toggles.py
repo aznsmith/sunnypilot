@@ -9,18 +9,26 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
-_TI_PARAM_PATH = '/data/params/d/MazdaTorqueInterceptorEnabled'
+_SP_PARAMS_DIR = '/data/params_sp'
+_TI_PARAM = 'MazdaTorqueInterceptorEnabled'
+_TI_PARAM_PATH = f'{_SP_PARAMS_DIR}/{_TI_PARAM}'
+_TI_PARAM_LEGACY_PATH = f'/data/params/d/{_TI_PARAM}'
 
 
 def _read_ti_state() -> bool:
-  try:
-    return os.path.exists(_TI_PARAM_PATH) and open(_TI_PARAM_PATH).read().strip() == '1'
-  except Exception:
-    return False
+  # Check params_sp first (persistent), then legacy params/d (migration)
+  for path in (_TI_PARAM_PATH, _TI_PARAM_LEGACY_PATH):
+    try:
+      if os.path.exists(path):
+        return open(path).read().strip() == '1'
+    except Exception:
+      pass
+  return False
 
 
 def _on_ti_toggle(state: bool) -> None:
   try:
+    os.makedirs(_SP_PARAMS_DIR, exist_ok=True)
     with open(_TI_PARAM_PATH, 'w') as f:
       f.write('1' if state else '0')
   except Exception:
