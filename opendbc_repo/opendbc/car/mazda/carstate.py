@@ -220,8 +220,14 @@ class CarState(CarStateBase):
 
   @staticmethod
   def get_can_parsers(CP, CP_SP=None):
+    # Pre-register TI_FEEDBACK with ignore_alive (nan freq) so the lazy VLDict accessor
+    # doesn't register it mid-cycle with last_nonempty_nanos=0, which would immediately
+    # set bus_timeout=True and trigger a false "CAN Bus Disconnected" immediate disable.
+    # ignore_alive means the parser never times out on TI_FEEDBACK absence; TI disconnection
+    # is handled by ti_lkas_allowed=False (steerFaultTemporary) rather than canBusMissing.
+    ti_msgs = [("TI_FEEDBACK", float('nan'))] if CP.flags & MazdaSafetyFlags.TORQUE_INTERCEPTOR else []
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 0),
-      Bus.body: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 1),
+      Bus.body: CANParser(DBC[CP.carFingerprint][Bus.pt], ti_msgs, 1),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 2),
     }
