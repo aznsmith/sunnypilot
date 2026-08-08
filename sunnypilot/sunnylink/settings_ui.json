@@ -2112,6 +2112,23 @@
         }
       ]
     },
+    "mazda": {
+      "title": "Mazda Settings",
+      "description": "",
+      "items": [
+        {
+          "key": "MazdaTorqueInterceptorEnabled",
+          "widget": "toggle",
+          "title": "Torque Interceptor",
+          "description": "Enable if the MoreTorque Torque Interceptor hardware is installed on this vehicle. This changes how steering torque commands and driver-torque feedback are read and sent -- only enable this if the interceptor hardware is actually installed.",
+          "enablement": [
+            {
+              "type": "offroad_only"
+            }
+          ]
+        }
+      ]
+    },
     "subaru": {
       "title": "Subaru Settings",
       "description": "",
