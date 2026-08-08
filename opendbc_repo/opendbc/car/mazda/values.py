@@ -25,6 +25,13 @@ class CarControllerParams:
     pass
 
 
+class TI_STATE:
+  DISCOVER = 0
+  OFF = 1
+  DRIVER_OVER = 2
+  RUN = 3
+
+
 @dataclass
 class MazdaCarDocs(CarDocs):
   package: str = "All"
@@ -40,6 +47,17 @@ class MazdaFlags(IntFlag):
   # Static flags
   # Gen 1 hardware: same CAN messages and same camera
   GEN1 = 1
+  # Torque Interceptor hardware installed: intercepts/overrides the EPS torque
+  # signal on a separate CAN message, removing the stock steering lockout
+  TORQUE_INTERCEPTOR = 2
+
+
+# Mirrors the FLAG_MAZDA_TORQUE_INTERCEPTOR mask in
+# opendbc/safety/modes/mazda.h -- this is what actually gets forwarded to the
+# C safety layer via safetyConfigs[0].safetyParam, not MazdaFlags above (that
+# one is CarParams.flags, used only on the Python side).
+class MazdaSafetyFlags(IntFlag):
+  TORQUE_INTERCEPTOR = 1
 
 
 @dataclass
@@ -79,6 +97,11 @@ class LKAS_LIMITS:
   STEER_THRESHOLD = 15
   DISABLE_SPEED = 45    # kph
   ENABLE_SPEED = 52     # kph
+  # Torque Interceptor: torque sensor lives past the interceptor, so the driver
+  # override threshold and low-speed steering cutoff are both handled differently
+  TI_STEER_THRESHOLD = 6
+  TI_DISABLE_SPEED = 0  # kph
+  TI_ENABLE_SPEED = 0   # kph
 
 
 class Buttons:
