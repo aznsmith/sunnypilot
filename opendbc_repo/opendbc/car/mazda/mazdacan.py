@@ -62,6 +62,28 @@ def create_steering_control(packer, CP, frame, apply_torque, lkas):
   return packer.make_can_msg("CAM_LKAS", 0, values)
 
 
+def create_ti_steering_control(packer, frame, ti_apply_torque):
+  # Sibling to create_steering_control() above, not an extension of it -- see
+  # carcontroller.py. CAM_LKAS2's DBC definition (mazda_2017.dbc) has exactly three
+  # signals: LKAS_REQUEST, CHKSUM, KEY. No steer-request/active bit exists in this
+  # message; frame is accepted for signature symmetry with create_steering_control() but
+  # unused -- CAM_LKAS2 carries no counter field (unlike CAM_LKAS's CTR).
+  #
+  # CHKSUM here is not a real computed checksum despite the name -- MoreTore's source
+  # sets it to the same value as LKAS_REQUEST verbatim. KEY is a fixed constant, not
+  # per-message data (the DBC's declared range [3294744159|3294744161] has exactly three
+  # values; 3294744160 is the middle one MoreTore's fork uses). Both faithfully
+  # reproduced, not derived independently -- this is what the interceptor hardware
+  # apparently expects, not something verifiable from protocol first principles.
+  del frame  # unused, see above
+  values = {
+    "LKAS_REQUEST": ti_apply_torque,
+    "CHKSUM": ti_apply_torque,
+    "KEY": 3294744160,
+  }
+  return packer.make_can_msg("CAM_LKAS2", 1, values)
+
+
 def create_alert_command(packer, cam_msg: dict, ldw: bool, steer_required: bool):
   values = {s: cam_msg[s] for s in [
     "LINE_VISIBLE",

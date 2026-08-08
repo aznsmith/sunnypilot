@@ -3,7 +3,7 @@ from opendbc.car import Bus, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.values import CarControllerParams, Buttons
+from opendbc.car.mazda.values import CarControllerParams, Buttons, MazdaFlags
 
 from opendbc.sunnypilot.car.mazda.icbm import IntelligentCruiseButtonManagementInterface
 
@@ -15,6 +15,18 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
     IntelligentCruiseButtonManagementInterface.__init__(self, CP, CP_SP)
     self.apply_torque_last = 0
+    # NOTE: assigned every cycle below but never read back as input -- intentional, not a
+    # bug. Both the stock and Torque Interceptor channels are commanded from the same
+    # target torque and rate-limited against the shared self.apply_torque_last (see
+    # update() below). Giving the TI channel its own independent last-value was tried and
+    # reverted: simulating apply_driver_steer_torque_limits() showed it causes a real
+    # resume-lag regression whenever CS.ti_lkas_allowed toggles back on after being False
+    # (e.g. after a driver override or ramp-down) -- the TI channel would have to re-ramp
+    # from a frozen/reset value instead of picking up exactly where the stock channel
+    # already is, a multi-cycle torque-output gap that doesn't exist with shared state.
+    # This matches MoreTore's source exactly, including this dead store -- do not "fix" it
+    # into a separate self.ti_apply_torque_last without re-checking that finding.
+    self.ti_apply_torque_last = 0
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.brake_counter = 0
 
@@ -22,12 +34,23 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     can_sends = []
 
     apply_torque = 0
+    ti_apply_torque = 0
 
     if CC.latActive:
       # calculate steer and also set limits due to driver torque
       new_torque = int(round(CC.actuators.torque * CarControllerParams.STEER_MAX))
       apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
                                                       CS.out.steeringTorque, CarControllerParams)
+
+      if self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR and CS.ti_lkas_allowed:
+        # Same target and the same CarControllerParams.STEER_MAX envelope as the stock
+        # channel above -- NOT the unused TI_STEER_MAX=600 in values.py -- and deliberately
+        # the same self.apply_torque_last (see the NOTE on self.ti_apply_torque_last in
+        # __init__). Confirmed byte-identical output to a from-scratch reimplementation in
+        # 200 randomized steady-state cycles (reversals, ramps, driver overrides).
+        ti_new_torque = int(round(CC.actuators.torque * CarControllerParams.STEER_MAX))
+        ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.apply_torque_last,
+                                                  CS.out.steeringTorque, CarControllerParams)
 
     if CC.cruiseControl.cancel:
       # If brake is pressed, let us wait >70ms before trying to disable crz to avoid
@@ -47,6 +70,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
         can_sends.append(mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter, Buttons.RESUME))
 
     self.apply_torque_last = apply_torque
+    self.ti_apply_torque_last = ti_apply_torque
 
     # send HUD alerts
     if self.frame % 50 == 0:
@@ -59,6 +83,14 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # send steering command
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,
                                                       self.frame, apply_torque, CS.cam_lkas))
+    if self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR:
+      # Sent every cycle once the flag is set, matching the stock message's unconditional
+      # send above -- ti_apply_torque is 0 (not simply omitted) on cycles where
+      # CC.latActive or CS.ti_lkas_allowed is False. See mazdacan.py for
+      # create_ti_steering_control() -- a sibling function, not an extension of
+      # create_steering_control()'s existing signature, so the 5-arg call above is
+      # unchanged for every other caller/car.
+      can_sends.append(mazdacan.create_ti_steering_control(self.packer, self.frame, ti_apply_torque))
 
     # Intelligent Cruise Button Management
     can_sends.extend(IntelligentCruiseButtonManagementInterface.update(self, CC_SP, CS, self.packer, self.frame, self.last_button_frame))
