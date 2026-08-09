@@ -11,7 +11,7 @@
   "opendbc": {
     "upstream_repo": "sunnypilot/opendbc",
     "tracked_ref": "master",
-    "pinned_commit": "b9712d20efd4fb7b1c29378ee153013d2a32a9f1",
+    "pinned_commit": "8b9fd4a653ab9d9e4f455f01eb61ef22dbc96988",
     "port_repo": "aznsmith/opendbc",
     "port_branch": "torque-interceptor-opendbc-base",
     "note": "sunnypilot/opendbc publishes no releases and no tags at all (confirmed via API: both endpoints return empty arrays). Freshness is tracked purely by diffing pinned_commit against tracked_ref's (master) live HEAD. As of the last manual check, master was 99 commits ahead of pinned_commit."
