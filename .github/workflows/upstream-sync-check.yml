@@ -516,32 +516,39 @@ jobs:
       - name: Install dependencies
         if: steps.candidate.outputs.status == 'rebased'
         working-directory: opendbc-standalone
-        run: uv sync --frozen
+        run: |
+          # --all-extras pulls in the "testing" extra, which is where unittest-parallel
+          # (opendbc's own test runner -- see lefthook.yml's `test:` block) lives.
+          # Matches setup.sh's own `uv sync --all-extras --all-groups --inexact` (dropping
+          # --inexact, which only affects removal of extraneous packages, not relevant here).
+          uv sync --frozen --all-extras --all-groups
 
       - name: Run Mazda safety + car-interface + simulated Params() tests
         id: tests
         if: steps.candidate.outputs.status == 'rebased'
         working-directory: opendbc-standalone
         run: |
+          # Uses unittest-parallel, not pytest: this is opendbc's own actual CI test
+          # runner (test.sh -> lefthook run test -> unittest-parallel -j4), not a
+          # pytest install of convenience. Confirmed empirically that stdlib unittest
+          # discovery (which unittest-parallel wraps) silently finds zero tests from
+          # bare pytest-style functions -- test_mazda_torque_interceptor.py is written
+          # as a unittest.TestCase subclass specifically so it's discoverable here,
+          # matching test_car_interfaces.py/test_mazda.py's existing convention.
+          # -k is case-sensitive substring match, OR'd across repeated flags (confirmed
+          # empirically): "Mazda" catches TestMazdaSafety/TestMazdaIgnition/our new
+          # TestMazdaTorqueInterceptor; "MAZDA" catches the MAZDA_3/MAZDA_6/etc.
+          # dynamically-generated car-interface test methods.
           set +e
-          uv run pytest -q \
-            opendbc/safety/tests/test_mazda.py \
-            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_3" \
-            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_6" \
-            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX5" \
-            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX5_2022" \
-            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX9" \
-            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX9_2021" \
-            opendbc/sunnypilot/car/tests/test_mazda_torque_interceptor.py \
-            2>&1 | tee /tmp/pytest-output.txt
-          PYTEST_EXIT=${PIPESTATUS[0]}
+          uv run unittest-parallel -v -j"$(nproc)" -k Mazda -k MAZDA 2>&1 | tee /tmp/pytest-output.txt
+          TEST_EXIT=${PIPESTATUS[0]}
           set -e
           {
             echo "pytest_output<<SYNC_EOF"
             tail -c 60000 /tmp/pytest-output.txt
             echo "SYNC_EOF"
           } >> "$GITHUB_OUTPUT"
-          if [ $PYTEST_EXIT -eq 0 ]; then
+          if [ $TEST_EXIT -eq 0 ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
