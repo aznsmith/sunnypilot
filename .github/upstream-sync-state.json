@@ -1,0 +1,19 @@
+{
+  "$comment": "Tracked base commits for upstream-sync-check.yml. Update pinned_commit only via a merged auto-rebase PR (the PR includes the bump) or by hand after a manual rebase -- never edit this ahead of an actual verified rebase.",
+  "superproject": {
+    "upstream_repo": "sunnypilot/sunnypilot",
+    "tracked_ref": "mici-sla-ui",
+    "pinned_commit": "0268dfe79a73bf5d961dc4bac98fc05aa0ff638a",
+    "port_repo": "aznsmith/sunnypilot",
+    "port_branch": "torque-interceptor-base-mici",
+    "note": "mici-sla-ui is sunnypilot's internal CI staging branch for the mici hardware target, not a stable/published release line, and carries no tags of its own. sunnypilot/sunnypilot's dated release tags (v2026.xxx.xxx) all have target_commitish=master, which mici-sla-ui diverges from -- they are not a valid freshness signal for this lineage. Freshness is tracked by diffing pinned_commit against tracked_ref's live HEAD instead. NOTE: torque-interceptor-port (the artifact branch with prebuilt binaries, built on the separate squashed release-mici lineage) has NO common git ancestor with mici-sla-ui -- confirmed via GitHub compare API. Rebasing must target torque-interceptor-base-mici, not torque-interceptor-port; landing a rebase here does not update torque-interceptor-port, which still requires the manual on-device build + binary-swap step."
+  },
+  "opendbc": {
+    "upstream_repo": "sunnypilot/opendbc",
+    "tracked_ref": "master",
+    "pinned_commit": "b9712d20efd4fb7b1c29378ee153013d2a32a9f1",
+    "port_repo": "aznsmith/opendbc",
+    "port_branch": "torque-interceptor-opendbc-base",
+    "note": "sunnypilot/opendbc publishes no releases and no tags at all (confirmed via API: both endpoints return empty arrays). Freshness is tracked purely by diffing pinned_commit against tracked_ref's (master) live HEAD. As of the last manual check, master was 99 commits ahead of pinned_commit."
+  }
+}

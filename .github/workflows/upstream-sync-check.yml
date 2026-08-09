@@ -1,0 +1,672 @@
+name: Upstream Sync Check
+
+# PURPOSE: detect upstream drift on the two repos this port straddles, attempt a
+# rebase in an isolated candidate branch, run CI-safe test coverage, and REPORT
+# (PR or issue). This workflow never auto-merges, never pushes directly to
+# torque-interceptor-base-mici / torque-interceptor-port / torque-interceptor-opendbc-base,
+# and never auto-resolves a conflict. Its only job is detect, attempt in isolation,
+# test, and report.
+#
+# BRANCH TARGET NOTE (read before changing anything below):
+# torque-interceptor-port (the artifact branch carrying prebuilt on-device binaries,
+# built on the separate, squashed release-mici lineage) has NO common git ancestor
+# with sunnypilot/sunnypilot's mici-sla-ui -- confirmed via:
+#   gh api repos/aznsmith/sunnypilot/compare/<mici-sla-ui-pinned-sha>...torque-interceptor-port
+# which returns 404 "No common ancestor between ... and torque-interceptor-port."
+# `git rebase --onto` requires the old-base to be an ancestor of the branch being
+# rebased, so torque-interceptor-port cannot be the rebase target. This workflow
+# therefore rebases and opens PRs against torque-interceptor-base-mici (the real
+# buildable-source branch) instead. Landing a PR from this workflow does NOT update
+# torque-interceptor-port -- that still requires the manual on-device build +
+# params_pyx.so/ipc_pyx.so swap, same process used for the original port (see PR
+# body template below, which restates this explicitly so it isn't lost).
+#
+# CROSS_REPO_PAT (required secret, opendbc job only):
+# the default GITHUB_TOKEN is scoped to the repo the workflow runs in
+# (aznsmith/sunnypilot) and cannot push branches or open PRs/issues on
+# aznsmith/opendbc. Create a fine-grained PAT with these scopes on BOTH
+# aznsmith/sunnypilot and aznsmith/opendbc:
+#   - Contents:       Read and write
+#   - Pull requests:  Read and write
+#   - Issues:         Read and write
+# and add it as a repository secret named CROSS_REPO_PAT in aznsmith/sunnypilot
+# (Settings -> Secrets and variables -> Actions). If it ever needs regenerating,
+# this comment is the record of exactly what to recreate.
+#
+# STATE FILE: .github/upstream-sync-state.json tracks the exact commit each port
+# branch is currently pinned to, per repo. Freshness is NOT checked against GitHub
+# Releases/tags -- sunnypilot/sunnypilot's dated tags all target master, which
+# mici-sla-ui diverges from, and sunnypilot/opendbc publishes no tags/releases at
+# all (confirmed via API). Instead, pinned_commit is diffed against tracked_ref's
+# live HEAD on each upstream repo. A merged auto-rebase PR includes a bump to
+# pinned_commit so the pin advances automatically when you merge; if you rebase by
+# hand instead, update pinned_commit yourself afterward.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync-superproject:
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.summarize.outputs.result }}
+      pr_url: ${{ steps.summarize.outputs.pr_url }}
+      issue_url: ${{ steps.summarize.outputs.issue_url }}
+    env:
+      PORT_BRANCH: torque-interceptor-base-mici
+      CANDIDATE_BRANCH: torque-interceptor-base-mici-rebase-candidate
+      STATE_FILE: .github/upstream-sync-state.json
+    steps:
+      - name: Checkout port branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PORT_BRANCH }}
+          fetch-depth: 0
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "upstream-sync-bot"
+          git config user.email "actions@github.com"
+
+      - name: Read tracked state
+        id: state
+        run: |
+          jq -e . "$STATE_FILE" > /dev/null   # fail loudly if the state file is missing/invalid JSON
+          UPSTREAM_REPO=$(jq -r '.superproject.upstream_repo' "$STATE_FILE")
+          TRACKED_REF=$(jq -r '.superproject.tracked_ref' "$STATE_FILE")
+          PINNED_COMMIT=$(jq -r '.superproject.pinned_commit' "$STATE_FILE")
+          echo "UPSTREAM_REPO=$UPSTREAM_REPO" >> "$GITHUB_ENV"
+          echo "TRACKED_REF=$TRACKED_REF" >> "$GITHUB_ENV"
+          echo "PINNED_COMMIT=$PINNED_COMMIT" >> "$GITHUB_ENV"
+
+      - name: Fetch upstream tracked ref
+        id: fetch
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          if git fetch upstream "$TRACKED_REF"; then
+            echo "reachable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Diagnose drift
+        id: diagnose
+        if: steps.fetch.outputs.reachable == 'true'
+        run: |
+          NEW_HEAD=$(git rev-parse upstream/"$TRACKED_REF")
+          echo "NEW_HEAD=$NEW_HEAD" >> "$GITHUB_ENV"
+          if [ "$NEW_HEAD" = "$PINNED_COMMIT" ]; then
+            echo "status=unchanged" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=stale" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report unreachable tracked ref
+        id: report_unreachable
+        if: steps.fetch.outputs.reachable == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="[upstream-sync] tracked ref '$TRACKED_REF' is unreachable on $UPSTREAM_REPO"
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --search "in:title \"$TITLE\"" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "issue_url=$(gh issue view "$EXISTING" --repo "$GITHUB_REPOSITORY" --json url --jq .url)" >> "$GITHUB_OUTPUT"
+          else
+            BODY=$(cat <<EOF
+          \`git fetch upstream $TRACKED_REF\` failed against \`$UPSTREAM_REPO\`. This usually
+          means the branch was renamed, deleted, or force-pushed in a way that broke the
+          fetch -- not a normal drift/conflict situation, so this is a distinctly-worded
+          issue rather than a rebase-conflict report.
+
+          Current pinned_commit in \`$STATE_FILE\`: \`$PINNED_COMMIT\`
+
+          Check \`https://github.com/$UPSTREAM_REPO/branches\` for what the mici lineage is
+          now called, and update \`.github/upstream-sync-state.json\`'s \`tracked_ref\`
+          accordingly before re-running this workflow.
+          EOF
+          )
+            URL=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY")
+            echo "issue_url=$URL" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create candidate branch
+        id: candidate
+        if: steps.diagnose.outputs.status == 'stale'
+        run: |
+          git checkout -b "$CANDIDATE_BRANCH"
+          set +e
+          git rebase --onto "$NEW_HEAD" "$PINNED_COMMIT" "$CANDIDATE_BRANCH"
+          REBASE_EXIT=$?
+          set -e
+          if [ $REBASE_EXIT -ne 0 ]; then
+            CONFLICTED=$(git diff --name-only --diff-filter=U || true)
+            git rebase --abort || true
+            {
+              echo "conflicted_files<<SYNC_EOF"
+              echo "$CONFLICTED"
+              echo "SYNC_EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=rebased" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report rebase conflict
+        id: report_conflict
+        if: steps.candidate.outputs.status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed via env, not interpolated into the script with ${{ }}: this content is
+          # dynamic (git diff output) and substituting it directly into the run: script text
+          # would let a pathological file list corrupt the heredoc/quoting below.
+          CONFLICTED_FILES: ${{ steps.candidate.outputs.conflicted_files }}
+        run: |
+          TITLE="[upstream-sync] rebase conflict: $PORT_BRANCH onto $UPSTREAM_REPO@$TRACKED_REF"
+          cat > /tmp/issue-body.md <<EOF
+          Attempted \`git rebase --onto $NEW_HEAD $PINNED_COMMIT\` on an isolated copy of
+          \`$PORT_BRANCH\` (branch \`$CANDIDATE_BRANCH\`, not pushed -- this issue is the only
+          artifact left behind). Nothing was auto-resolved.
+
+          **Old base:** \`$PINNED_COMMIT\`
+          **New upstream head:** \`$NEW_HEAD\` (\`$UPSTREAM_REPO@$TRACKED_REF\`)
+
+          **Conflicted files:**
+          \`\`\`
+          $CONFLICTED_FILES
+          \`\`\`
+
+          To work through this locally:
+          \`\`\`sh
+          git fetch origin $PORT_BRANCH
+          git fetch https://github.com/$UPSTREAM_REPO.git $TRACKED_REF
+          git checkout -b fix-upstream-rebase origin/$PORT_BRANCH
+          git rebase --onto FETCH_HEAD $PINNED_COMMIT fix-upstream-rebase
+          # resolve conflicts, git rebase --continue
+          \`\`\`
+          EOF
+          URL=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file /tmp/issue-body.md)
+          echo "issue_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.candidate.outputs.status == 'rebased'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        if: steps.candidate.outputs.status == 'rebased'
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        if: steps.candidate.outputs.status == 'rebased'
+        run: |
+          # Matches the install_python_deps() logic verified against this port earlier
+          # (setup_dependencies.sh's install_linux_deps() writes udev rules and fails on
+          # AGNOS/read-only-root -- irrelevant here anyway, this runner isn't the device).
+          git submodule update --init --recursive
+          uv sync --frozen
+
+      - name: Run Mazda safety + car-interface + simulated Params() tests
+        id: tests
+        if: steps.candidate.outputs.status == 'rebased'
+        run: |
+          # NOT run here, and cannot be, per the original port's own findings: the real
+          # params_pyx.so/ipc_pyx.so build requires a matching on-device capnp toolchain
+          # and (for the full build) vendored Qualcomm/MSM camera-ISP headers this runner
+          # doesn't have. test_mazda_torque_interceptor.py exercises the same
+          # _initialize_mazda() Python logic those binaries end up calling, without the
+          # compiled binding -- it is a simulation, not a substitute for the on-device
+          # end-to-end Params() test done manually before merging to torque-interceptor-port.
+          TEST_ARGS=(
+            opendbc_repo/opendbc/safety/tests/test_mazda.py
+            "opendbc_repo/opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_3"
+            "opendbc_repo/opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_6"
+            "opendbc_repo/opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX5"
+            "opendbc_repo/opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX5_2022"
+            "opendbc_repo/opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX9"
+            "opendbc_repo/opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX9_2021"
+            opendbc_repo/opendbc/sunnypilot/car/tests/test_mazda_torque_interceptor.py
+          )
+
+          set +e
+          uv run pytest -q "${TEST_ARGS[@]}" 2>&1 | tee /tmp/pytest-output.txt
+          PYTEST_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          # Fast path failed -- check whether it's specifically the known
+          # msgq.ipc_pyx-not-built gap (root conftest.py's
+          # openpilot.system.manager.manager -> cereal.messaging -> msgq import chain,
+          # seen during the original on-device port work) before assuming a real test
+          # failure. Only pay the scons/C++ toolchain cost if that's actually what
+          # happened -- most runs should never reach this branch.
+          if [ $PYTEST_EXIT -ne 0 ] && grep -q "ModuleNotFoundError: No module named 'msgq.ipc_pyx'" /tmp/pytest-output.txt; then
+            echo "::warning::fast path failed on missing msgq.ipc_pyx -- building that one target and retrying, per the same fix used during the original on-device port"
+            set +e
+            uv run scons -j"$(nproc)" msgq_repo/msgq/ipc_pyx.so 2>&1 | tee /tmp/scons-fallback-output.txt
+            SCONS_EXIT=${PIPESTATUS[0]}
+            set -e
+
+            if [ $SCONS_EXIT -eq 0 ]; then
+              set +e
+              uv run pytest -q "${TEST_ARGS[@]}" 2>&1 | tee /tmp/pytest-output.txt
+              PYTEST_EXIT=${PIPESTATUS[0]}
+              set -e
+            else
+              # Building the fallback target itself failed -- this is a new, different
+              # problem from the msgq import gap, so surface the scons failure directly
+              # rather than re-running pytest against an unbuilt target and reporting a
+              # misleading "test failure" that's actually a build failure.
+              {
+                echo ""
+                echo "=== msgq_repo/msgq/ipc_pyx.so fallback build also failed: ==="
+                cat /tmp/scons-fallback-output.txt
+              } >> /tmp/pytest-output.txt
+            fi
+          fi
+
+          {
+            echo "pytest_output<<SYNC_EOF"
+            tail -c 60000 /tmp/pytest-output.txt
+            echo "SYNC_EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ $PYTEST_EXIT -eq 0 ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report test failure
+        id: report_test_fail
+        if: steps.candidate.outputs.status == 'rebased' && steps.tests.outputs.status == 'failed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTEST_OUTPUT: ${{ steps.tests.outputs.pytest_output }}
+        run: |
+          TITLE="[upstream-sync] tests failed after clean rebase: $PORT_BRANCH onto $UPSTREAM_REPO@$TRACKED_REF"
+          cat > /tmp/issue-body.md <<EOF
+          Rebase of \`$PORT_BRANCH\` onto \`$UPSTREAM_REPO@$TRACKED_REF\` (\`$NEW_HEAD\`) completed
+          with no conflicts, but the Mazda safety / car-interface / simulated Params() tests
+          failed on the result. Nothing was pushed.
+
+          **Old base:** \`$PINNED_COMMIT\`
+          **New upstream head:** \`$NEW_HEAD\`
+
+          **pytest output (tail):**
+          \`\`\`
+          $PYTEST_OUTPUT
+          \`\`\`
+
+          To reproduce locally:
+          \`\`\`sh
+          git fetch origin $PORT_BRANCH
+          git fetch https://github.com/$UPSTREAM_REPO.git $TRACKED_REF
+          git checkout -b fix-upstream-rebase origin/$PORT_BRANCH
+          git rebase --onto FETCH_HEAD $PINNED_COMMIT fix-upstream-rebase
+          uv sync --frozen && uv run pytest opendbc_repo/opendbc/safety/tests/test_mazda.py opendbc_repo/opendbc/car/tests/test_car_interfaces.py -k mazda -i
+          \`\`\`
+          EOF
+          URL=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file /tmp/issue-body.md)
+          echo "issue_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Push candidate and open PR
+        id: open_pr
+        if: steps.candidate.outputs.status == 'rebased' && steps.tests.outputs.status == 'passed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          jq --arg sha "$NEW_HEAD" '.superproject.pinned_commit = $sha' "$STATE_FILE" > /tmp/state.json
+          mv /tmp/state.json "$STATE_FILE"
+          git add "$STATE_FILE"
+          git commit -m "upstream-sync: bump superproject pinned_commit to $NEW_HEAD"
+          git push --force-with-lease origin "$CANDIDATE_BRANCH"
+
+          TITLE="[auto-rebase candidate] $PORT_BRANCH onto $UPSTREAM_REPO@$TRACKED_REF ($NEW_HEAD)"
+          BODY=$(cat <<EOF
+          **auto-rebase candidate -- NOT tested on real hardware, needs manual device
+          verification before merge.**
+
+          Rebased \`$PORT_BRANCH\` from \`$PINNED_COMMIT\` onto \`$UPSTREAM_REPO@$TRACKED_REF\`
+          (\`$NEW_HEAD\`) with no conflicts. Mazda safety tests, car-interface tests, and the
+          simulated \`_initialize_mazda()\` Params() logic test all passed in CI.
+
+          **What this PR does NOT verify:** the real \`params_pyx.so\`/\`ipc_pyx.so\` build and
+          end-to-end \`Params()\` test -- those require the actual comma device (matching
+          capnp toolchain, and for a full build, vendored camera-ISP headers this CI runner
+          doesn't have). Do the on-device build + verification pass before this touches
+          \`torque-interceptor-port\` in any way, same process as the original port.
+
+          **This PR does not update \`torque-interceptor-port\`.** That branch has no common
+          git ancestor with \`$TRACKED_REF\` (it's built on the separate, squashed
+          \`release-mici\` lineage) and was never a valid rebase target -- see the workflow
+          file header for details. Landing this PR only advances the buildable-source branch;
+          promoting it into \`torque-interceptor-port\` is still the manual binary-swap step.
+
+          This PR also bumps \`.github/upstream-sync-state.json\`'s \`superproject.pinned_commit\`
+          to \`$NEW_HEAD\`, so merging it advances the tracked base for the next run.
+          EOF
+          )
+          URL=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$PORT_BRANCH" --head "$CANDIDATE_BRANCH" --title "$TITLE" --body "$BODY")
+          echo "pr_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize
+        id: summarize
+        if: always()
+        run: |
+          if [ "${{ steps.fetch.outputs.reachable }}" = "false" ]; then
+            echo "result=issue-unreachable" >> "$GITHUB_OUTPUT"
+            echo "issue_url=${{ steps.report_unreachable.outputs.issue_url }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.diagnose.outputs.status }}" = "unchanged" ]; then
+            echo "result=unchanged" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.candidate.outputs.status }}" = "conflict" ]; then
+            echo "result=issue-conflict" >> "$GITHUB_OUTPUT"
+            echo "issue_url=${{ steps.report_conflict.outputs.issue_url }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.tests.outputs.status }}" = "failed" ]; then
+            echo "result=issue-test-fail" >> "$GITHUB_OUTPUT"
+            echo "issue_url=${{ steps.report_test_fail.outputs.issue_url }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.open_pr.outputs.pr_url }}" != "" ]; then
+            echo "result=pr-opened" >> "$GITHUB_OUTPUT"
+            echo "pr_url=${{ steps.open_pr.outputs.pr_url }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+  sync-opendbc:
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.summarize.outputs.result }}
+      pr_url: ${{ steps.summarize.outputs.pr_url }}
+      issue_url: ${{ steps.summarize.outputs.issue_url }}
+    env:
+      PORT_BRANCH: torque-interceptor-opendbc-base
+      CANDIDATE_BRANCH: torque-interceptor-opendbc-base-rebase-candidate
+      PORT_REPO: aznsmith/opendbc
+    steps:
+      - name: Checkout superproject (for the state file only)
+        uses: actions/checkout@v4
+        with:
+          ref: torque-interceptor-base-mici
+          sparse-checkout: |
+            .github/upstream-sync-state.json
+          sparse-checkout-cone-mode: false
+
+      - name: Read tracked state
+        id: state
+        run: |
+          jq -e . .github/upstream-sync-state.json > /dev/null
+          UPSTREAM_REPO=$(jq -r '.opendbc.upstream_repo' .github/upstream-sync-state.json)
+          TRACKED_REF=$(jq -r '.opendbc.tracked_ref' .github/upstream-sync-state.json)
+          PINNED_COMMIT=$(jq -r '.opendbc.pinned_commit' .github/upstream-sync-state.json)
+          echo "UPSTREAM_REPO=$UPSTREAM_REPO" >> "$GITHUB_ENV"
+          echo "TRACKED_REF=$TRACKED_REF" >> "$GITHUB_ENV"
+          echo "PINNED_COMMIT=$PINNED_COMMIT" >> "$GITHUB_ENV"
+
+      - name: Checkout opendbc port branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PORT_REPO }}
+          ref: ${{ env.PORT_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: opendbc-standalone
+
+      - name: Configure git identity
+        working-directory: opendbc-standalone
+        run: |
+          git config user.name "upstream-sync-bot"
+          git config user.email "actions@github.com"
+
+      - name: Fetch upstream tracked ref
+        id: fetch
+        working-directory: opendbc-standalone
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          if git fetch upstream "$TRACKED_REF"; then
+            echo "reachable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Diagnose drift
+        id: diagnose
+        if: steps.fetch.outputs.reachable == 'true'
+        working-directory: opendbc-standalone
+        run: |
+          NEW_HEAD=$(git rev-parse upstream/"$TRACKED_REF")
+          echo "NEW_HEAD=$NEW_HEAD" >> "$GITHUB_ENV"
+          if [ "$NEW_HEAD" = "$PINNED_COMMIT" ]; then
+            echo "status=unchanged" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=stale" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report unreachable tracked ref
+        id: report_unreachable
+        if: steps.fetch.outputs.reachable == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          TITLE="[upstream-sync] tracked ref '$TRACKED_REF' is unreachable on $UPSTREAM_REPO"
+          BODY="\`git fetch upstream $TRACKED_REF\` failed against \`$UPSTREAM_REPO\`. Check https://github.com/$UPSTREAM_REPO/branches for the current default branch name and update .github/upstream-sync-state.json's opendbc.tracked_ref in aznsmith/sunnypilot accordingly."
+          URL=$(gh issue create --repo "$PORT_REPO" --title "$TITLE" --body "$BODY")
+          echo "issue_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Create candidate branch
+        id: candidate
+        if: steps.diagnose.outputs.status == 'stale'
+        working-directory: opendbc-standalone
+        run: |
+          git checkout -b "$CANDIDATE_BRANCH"
+          set +e
+          git rebase --onto "$NEW_HEAD" "$PINNED_COMMIT" "$CANDIDATE_BRANCH"
+          REBASE_EXIT=$?
+          set -e
+          if [ $REBASE_EXIT -ne 0 ]; then
+            CONFLICTED=$(git diff --name-only --diff-filter=U || true)
+            git rebase --abort || true
+            {
+              echo "conflicted_files<<SYNC_EOF"
+              echo "$CONFLICTED"
+              echo "SYNC_EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=rebased" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report rebase conflict
+        id: report_conflict
+        if: steps.candidate.outputs.status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          CONFLICTED_FILES: ${{ steps.candidate.outputs.conflicted_files }}
+        run: |
+          TITLE="[upstream-sync] rebase conflict: $PORT_BRANCH onto $UPSTREAM_REPO@$TRACKED_REF"
+          cat > /tmp/issue-body.md <<EOF
+          Attempted \`git rebase --onto $NEW_HEAD $PINNED_COMMIT\` on an isolated copy of
+          \`$PORT_BRANCH\` (branch \`$CANDIDATE_BRANCH\`, not pushed). Nothing was auto-resolved.
+
+          **Old base:** \`$PINNED_COMMIT\`
+          **New upstream head:** \`$NEW_HEAD\` (\`$UPSTREAM_REPO@$TRACKED_REF\`)
+
+          **Conflicted files:**
+          \`\`\`
+          $CONFLICTED_FILES
+          \`\`\`
+          EOF
+          URL=$(gh issue create --repo "$PORT_REPO" --title "$TITLE" --body-file /tmp/issue-body.md)
+          echo "issue_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.candidate.outputs.status == 'rebased'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        if: steps.candidate.outputs.status == 'rebased'
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        if: steps.candidate.outputs.status == 'rebased'
+        working-directory: opendbc-standalone
+        run: uv sync --frozen
+
+      - name: Run Mazda safety + car-interface + simulated Params() tests
+        id: tests
+        if: steps.candidate.outputs.status == 'rebased'
+        working-directory: opendbc-standalone
+        run: |
+          set +e
+          uv run pytest -q \
+            opendbc/safety/tests/test_mazda.py \
+            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_3" \
+            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_6" \
+            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX5" \
+            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX5_2022" \
+            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX9" \
+            "opendbc/car/tests/test_car_interfaces.py::TestCarInterfaces::test_car_interfaces_MAZDA_CX9_2021" \
+            opendbc/sunnypilot/car/tests/test_mazda_torque_interceptor.py \
+            2>&1 | tee /tmp/pytest-output.txt
+          PYTEST_EXIT=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "pytest_output<<SYNC_EOF"
+            tail -c 60000 /tmp/pytest-output.txt
+            echo "SYNC_EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ $PYTEST_EXIT -eq 0 ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report test failure
+        id: report_test_fail
+        if: steps.candidate.outputs.status == 'rebased' && steps.tests.outputs.status == 'failed'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          PYTEST_OUTPUT: ${{ steps.tests.outputs.pytest_output }}
+        run: |
+          TITLE="[upstream-sync] tests failed after clean rebase: $PORT_BRANCH onto $UPSTREAM_REPO@$TRACKED_REF"
+          cat > /tmp/issue-body.md <<EOF
+          Rebase completed with no conflicts, but tests failed. Nothing was pushed.
+
+          **Old base:** \`$PINNED_COMMIT\`
+          **New upstream head:** \`$NEW_HEAD\`
+
+          **pytest output (tail):**
+          \`\`\`
+          $PYTEST_OUTPUT
+          \`\`\`
+          EOF
+          URL=$(gh issue create --repo "$PORT_REPO" --title "$TITLE" --body-file /tmp/issue-body.md)
+          echo "issue_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Push candidate and open PR
+        id: open_pr
+        if: steps.candidate.outputs.status == 'rebased' && steps.tests.outputs.status == 'passed'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        working-directory: opendbc-standalone
+        run: |
+          git push --force-with-lease origin "$CANDIDATE_BRANCH"
+
+          TITLE="[auto-rebase candidate] $PORT_BRANCH onto $UPSTREAM_REPO@$TRACKED_REF ($NEW_HEAD)"
+          BODY=$(cat <<EOF
+          **auto-rebase candidate -- NOT tested on real hardware, needs manual device
+          verification before merge.**
+
+          Rebased \`$PORT_BRANCH\` from \`$PINNED_COMMIT\` onto \`$UPSTREAM_REPO@$TRACKED_REF\`
+          (\`$NEW_HEAD\`) with no conflicts. Mazda safety tests, car-interface tests, and the
+          simulated \`_initialize_mazda()\` Params() logic test all passed in CI.
+
+          **Merging this alone is not sufficient.** \`aznsmith/sunnypilot\`'s
+          \`torque-interceptor-base-mici\` pins this branch via a submodule gitlink -- after
+          merging, that gitlink needs bumping too (the superproject sync job in
+          upstream-sync-check.yml handles its own side independently; check whether it also
+          produced a PR this run, and if not, the two are now out of sync until you update
+          the gitlink by hand).
+          EOF
+          )
+          URL=$(gh pr create --repo "$PORT_REPO" --base "$PORT_BRANCH" --head "$CANDIDATE_BRANCH" --title "$TITLE" --body "$BODY")
+          echo "pr_url=$URL" >> "$GITHUB_OUTPUT"
+
+          # Advance the pin in aznsmith/sunnypilot's state file so the next run compares
+          # against this new head, independent of whether/when the gitlink bump happens.
+          git clone --depth=1 --branch torque-interceptor-base-mici "https://x-access-token:${GH_TOKEN}@github.com/aznsmith/sunnypilot.git" /tmp/state-bump
+          jq --arg sha "$NEW_HEAD" '.opendbc.pinned_commit = $sha' /tmp/state-bump/.github/upstream-sync-state.json > /tmp/state.json
+          mv /tmp/state.json /tmp/state-bump/.github/upstream-sync-state.json
+          git -C /tmp/state-bump config user.name "upstream-sync-bot"
+          git -C /tmp/state-bump config user.email "actions@github.com"
+          git -C /tmp/state-bump commit -am "upstream-sync: bump opendbc pinned_commit to $NEW_HEAD"
+          git -C /tmp/state-bump push origin torque-interceptor-base-mici
+
+      - name: Summarize
+        id: summarize
+        if: always()
+        run: |
+          if [ "${{ steps.fetch.outputs.reachable }}" = "false" ]; then
+            echo "result=issue-unreachable" >> "$GITHUB_OUTPUT"
+            echo "issue_url=${{ steps.report_unreachable.outputs.issue_url }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.diagnose.outputs.status }}" = "unchanged" ]; then
+            echo "result=unchanged" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.candidate.outputs.status }}" = "conflict" ]; then
+            echo "result=issue-conflict" >> "$GITHUB_OUTPUT"
+            echo "issue_url=${{ steps.report_conflict.outputs.issue_url }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.tests.outputs.status }}" = "failed" ]; then
+            echo "result=issue-test-fail" >> "$GITHUB_OUTPUT"
+            echo "issue_url=${{ steps.report_test_fail.outputs.issue_url }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.open_pr.outputs.pr_url }}" != "" ]; then
+            echo "result=pr-opened" >> "$GITHUB_OUTPUT"
+            echo "pr_url=${{ steps.open_pr.outputs.pr_url }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+  cross-sync-status:
+    needs: [sync-superproject, sync-opendbc]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+    steps:
+      - name: Flag mismatched outcomes
+        run: |
+          SUPER_RESULT="${{ needs.sync-superproject.outputs.result }}"
+          ODBC_RESULT="${{ needs.sync-opendbc.outputs.result }}"
+          SUPER_PR="${{ needs.sync-superproject.outputs.pr_url }}"
+          ODBC_PR="${{ needs.sync-opendbc.outputs.pr_url }}"
+
+          echo "superproject: $SUPER_RESULT ${SUPER_PR}"
+          echo "opendbc:      $ODBC_RESULT ${ODBC_PR}"
+
+          if [ "$SUPER_RESULT" = "unchanged" ] && [ "$ODBC_RESULT" = "unchanged" ]; then
+            echo "Both unchanged, nothing to reconcile."
+            exit 0
+          fi
+
+          NOTE=""
+          if [ "$SUPER_RESULT" = "pr-opened" ] && [ "$ODBC_RESULT" = "pr-opened" ]; then
+            NOTE="Companion PR opened for the other repo this run: superproject -> $SUPER_PR, opendbc -> $ODBC_PR. Review/merge together -- the superproject's opendbc submodule gitlink still needs a manual bump to point at the opendbc PR's result after merge."
+          elif [ "$SUPER_RESULT" = "pr-opened" ] && [ "$ODBC_RESULT" != "pr-opened" ]; then
+            NOTE="Out of sync: superproject rebased cleanly ($SUPER_PR) but opendbc did not (result: $ODBC_RESULT). Do not merge the superproject PR until the opendbc side is resolved -- its submodule pin would otherwise stay stale relative to this rebase."
+          elif [ "$ODBC_RESULT" = "pr-opened" ] && [ "$SUPER_RESULT" != "pr-opened" ]; then
+            NOTE="Out of sync: opendbc rebased cleanly ($ODBC_PR) but the superproject did not (result: $SUPER_RESULT). Merging the opendbc PR now would leave torque-interceptor-base-mici's submodule gitlink pointing at a stale opendbc commit until the superproject side is resolved."
+          else
+            NOTE="Neither side produced a clean auto-rebase PR this run (superproject: $SUPER_RESULT, opendbc: $ODBC_RESULT). See their individual issues for details."
+          fi
+
+          echo "$NOTE"
+
+          TARGET_URL="$SUPER_PR"
+          [ -z "$TARGET_URL" ] && TARGET_URL="$ODBC_PR"
+          if [ -n "$TARGET_URL" ]; then
+            gh pr comment "$TARGET_URL" --body "**Cross-repo sync status:** $NOTE" || true
+          fi
