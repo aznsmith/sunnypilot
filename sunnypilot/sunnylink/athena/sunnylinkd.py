@@ -231,12 +231,43 @@ def getParams(params_keys: list[str], compression: bool = False) -> str | dict[s
     raise
 
 
+def _get_offroad_only_param_keys() -> set[str]:
+  """Param keys whose settings_ui.json entry declares offroad_only enablement.
+
+  Drives saveParams()'s onroad gate below. Reuses generate_schema() (already used
+  by getParamsMetadata() above) rather than re-reading settings_ui.json directly,
+  so this always matches what the on-device UI itself enforces.
+  """
+  schema = generate_schema()
+  keys = set()
+  for brand_settings in schema.get("vehicle_settings", {}).values():
+    for item in brand_settings.get("items", []):
+      if any(e.get("type") == "offroad_only" for e in item.get("enablement", [])):
+        keys.add(item["key"])
+  return keys
+
+
 @dispatcher.add_method
 def saveParams(params_to_update: dict[str, str], compression: bool = False) -> None:
+  # note: `params` here is the module-level Params() instance defined above, same as
+  # the version-counter code at the bottom of this function -- not re-instantiated.
+  is_offroad = params.get_bool("IsOffroad")
+  offroad_only_keys = _get_offroad_only_param_keys()
+
   for key, value in params_to_update.items():
     # disallow modifications to blocked parameters
     if key in BLOCKED_PARAMS:
       cloudlog.warning(f"sunnylinkd.saveParams.blocked: Attempted to modify blocked parameter '{key}'")
+      continue
+
+    # settings_ui.json's offroad_only enablement is UI-rendering metadata only --
+    # nothing previously enforced it server-side, so this RPC could silently apply
+    # a hardware-config toggle (changes panda safety config / CP.flags) mid-drive.
+    # ui_state isn't accessible from this process (it's only kept live by the UI
+    # process's own SubMaster polling loop) -- IsOffroad is the same Params()-based
+    # onroad signal athenad.py's ws_manage() already reads for a related purpose.
+    if key in offroad_only_keys and not is_offroad:
+      cloudlog.warning(f"sunnylinkd.saveParams.blocked_onroad: Refused to modify offroad-only parameter '{key}' while onroad")
       continue
 
     try:
