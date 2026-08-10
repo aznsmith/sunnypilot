@@ -77,6 +77,17 @@ void set_safety_mode(uint16_t mode, uint16_t param) {
       }
       can_silent = false;
       break;
+    case SAFETY_MAZDA:
+      set_intercept_relay(true, false);
+      heartbeat_counter = 0U;
+      heartbeat_lost = false;
+      if (GET_FLAG(param, FLAG_MAZDA_TORQUE_INTERCEPTOR)) {
+        current_board->set_can_mode(CAN_MODE_OBD_CAN2);
+      } else {
+        current_board->set_can_mode(CAN_MODE_NORMAL);
+      }
+      can_silent = false;
+      break;
     default:
       set_intercept_relay(true, false);
       heartbeat_counter = 0U;
