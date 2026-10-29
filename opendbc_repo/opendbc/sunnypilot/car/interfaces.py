@@ -160,4 +160,6 @@ def _initialize_mazda(CP: structs.CarParams, params_dict: dict[str, str]) -> Non
       # review for the mechanism (torque sensor + LKAS command both routed through the
       # interceptor device rather than the stock EPS path).
       CP.minSteerSpeed = 0.0
-      CP.steerAtStandstill = True
+      # Experiment: TI drops to OFF (VIOL=17) ~2s after standstill while torque is commanded;
+      # don't steer at standstill to test whether held torque is what triggers it.
+      CP.steerAtStandstill = False
